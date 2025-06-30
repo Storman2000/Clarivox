@@ -2,6 +2,9 @@ from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
+import os
+import shutil
+import whisper
 
 app = FastAPI()
 
@@ -34,19 +37,26 @@ class FHIRTask(BaseModel):
 # ------------------- Routes -------------------
 @app.post("/voicemail/upload")
 async def upload_voicemail(file: UploadFile = File(...)):
-    # Simulated transcription (replace with Whisper/Deepgram call)
-    transcript = "Hi, I need to reschedule my cardiology appointment. This is John Smith."
+    temp_path = f"/tmp/{uuid.uuid4().hex}_{file.filename}"
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    # Simulated NLP extraction (normally done via spaCy or transformers)
+    # Load Whisper model once (assumes 'base' is already downloaded via CLI or cached)
+    model = whisper.load_model("base")  # Will load from ~/.cache/whisper automatically
+    result = model.transcribe(temp_path)
+    transcript = result['text']
+    os.remove(temp_path)
+
+    # Simulated NLP
     triage = TranscriptionResult(
         transcript=transcript,
         urgency="low",
-        intent="reschedule",
+        intent="reschedule" if "reschedule" in transcript.lower() else "other",
         patient_name="John Smith",
         patient_id="12345"
     )
 
-    # Create FHIR resource
+    # FHIR output
     if triage.intent == "reschedule":
         fhir_resource = FHIRCommunicationRequest(
             subject={"reference": f"Patient/{triage.patient_id}"},

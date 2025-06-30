@@ -1,0 +1,14 @@
+# Ignore Python cache and virtual environment
+__pycache__/
+*.pyc
+venv/
+
+# VS Code settings
+.vscode/
+
+# Model downloads
+whisper/
+
+# Logs and temp
+*.log
+*.tmp
