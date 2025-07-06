@@ -12,3 +12,4 @@ whisper/
 # Logs and temp
 *.log
 *.tmp
+temp_*.m4a
