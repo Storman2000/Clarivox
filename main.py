@@ -1,90 +1,59 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from datetime import datetime
-import uuid
-import os
 import whisper
+import os
+import shutil
+import uuid
 import json
-import traceback
 
 app = FastAPI()
 
-# ------------------- Data Models -------------------
-class TranscriptionResult(BaseModel):
-    transcript: str
-    urgency: str
-    intent: str
-    patient_name: str
-    patient_id: str
+# Load Whisper model
+model = whisper.load_model("base", download_root=os.path.expanduser("~/.cache/whisper"))
 
-class FHIRCommunicationRequest(BaseModel):
-    resourceType: str = "CommunicationRequest"
-    status: str = "active"
-    intent: str = "proposal"
-    subject: dict
-    requester: dict
-    authoredOn: str
+# Directories for saving files
+TRANSCRIPT_DIR = "transcripts"
+AUDIO_DIR = "audio"
+FHIR_DIR = "fhir_outputs"
+os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(FHIR_DIR, exist_ok=True)
+
+class TranscriptionResponse(BaseModel):
+    resourceType: str
+    status: str
     payload: list
+    reasonCode: list
 
-class FHIRTask(BaseModel):
-    resourceType: str = "Task"
-    status: str = "requested"
-    intent: str = "order"
-    priority: str
-    for_: dict
-    authoredOn: str
-    description: str
+@app.post("/transcribe/", response_model=TranscriptionResponse)
+async def transcribe_audio(file: UploadFile = File(...)):
+    # Save audio file locally
+    audio_id = str(uuid.uuid4())
+    audio_path = os.path.join(AUDIO_DIR, f"{audio_id}_{file.filename}")
+    with open(audio_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-# ------------------- Routes -------------------
-@app.post("/voicemail/upload")
-async def upload_voicemail(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        temp_path = f"temp_{uuid.uuid4().hex}.m4a"
-        with open(temp_path, "wb") as f:
-            f.write(contents)
+    # Transcribe audio
+    result = model.transcribe(audio_path)
+    transcription = result["text"].strip()
 
-        # Load model from local disk (bypass SSL/download issues)
-        model = whisper.load_model(os.path.expanduser("~/.cache/whisper/whisper-base.pt"))
+    # Save transcription to file
+    transcript_path = os.path.join(TRANSCRIPT_DIR, f"{audio_id}.txt")
+    with open(transcript_path, "w") as f:
+        f.write(transcription)
 
-        result = model.transcribe(temp_path)
-        transcript = result["text"]
-        os.remove(temp_path)
+    # Generate FHIR CommunicationRequest
+    communication_request = {
+        "resourceType": "CommunicationRequest",
+        "status": "active",
+        "payload": [{"contentString": transcription}],
+        "reasonCode": [{"text": "Voicemail transcription"}]
+    }
 
-        triage = TranscriptionResult(
-            transcript=transcript,
-            urgency="low",
-            intent="reschedule" if "reschedule" in transcript.lower() else "other",
-            patient_name="John Smith",
-            patient_id="12345"
-        )
+    # Save FHIR output to file
+    fhir_path = os.path.join(FHIR_DIR, f"{audio_id}.json")
+    with open(fhir_path, "w") as f:
+        json.dump(communication_request, f, indent=2)
 
-        if triage.intent == "reschedule":
-            fhir_resource = FHIRCommunicationRequest(
-                subject={"reference": f"Patient/{triage.patient_id}"},
-                requester={"reference": "Practitioner/VA-Agent-001"},
-                authoredOn=datetime.utcnow().isoformat(),
-                payload=[{"contentString": triage.transcript}]
-            )
-        else:
-            fhir_resource = FHIRTask(
-                priority=triage.urgency,
-                for_={"reference": f"Patient/{triage.patient_id}"},
-                authoredOn=datetime.utcnow().isoformat(),
-                description=triage.transcript
-            )
-
-        os.makedirs("data", exist_ok=True)
-        base_filename = f"data/{uuid.uuid4().hex}"
-
-        with open(f"{base_filename}_transcript.txt", "w") as tf:
-            tf.write(triage.transcript)
-
-        with open(f"{base_filename}_fhir.json", "w") as jf:
-            json.dump(fhir_resource.dict(), jf, indent=2)
-
-        return {"status": "success", "FHIR": fhir_resource.dict()}
-
-    except Exception as e:
-        traceback.print_exc()
-        return {"status": "error", "detail": str(e)}
+    return communication_request
