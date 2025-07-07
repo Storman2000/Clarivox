@@ -1,50 +1,61 @@
+# main.py
+
 import os
 import uuid
-import json
+import shutil
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 import whisper
-from fastapi import FastAPI, UploadFile, File, HTTPException
+
 from utils.fhir import build_communication_request
+from utils.task import build_task
+from utils.intent import detect_intent
 from utils.storage import save_transcript, save_fhir_json
 
-# Ensure data directory
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
+app = FastAPI()
 
-app = FastAPI(
-    title="Clarivox MVP",
-    description="Voicemail → Transcription → FHIR pipeline",
-    version="0.1.0"
+# Load whisper model from cache to avoid SSL fetch
+model = whisper.load_model("base", download_root=os.path.expanduser("~/.cache/whisper"))
+
+# Setup CORS for Swagger UI (optional but safe for local dev)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Load Whisper model once, using local cache only
-try:
-    model = whisper.load_model(
-        "base",
-        download_root=os.path.expanduser("~/.cache/whisper")
-    )
-except Exception as e:
-    raise RuntimeError("Failed to load Whisper model from cache: " + str(e))
-
-
 @app.post("/transcribe/")
-async def transcribe_voicemail(file: UploadFile = File(...)):
-    # 1. Load audio into temp file
-    audio_path = os.path.join(DATA_DIR, f"{uuid.uuid4()}.{file.filename.split('.')[-1]}")
-    with open(audio_path, "wb") as out:
-        out.write(await file.read())
+async def transcribe_audio(file: UploadFile = File(...)):
+    # 1. Save uploaded file temporarily
+    file_id = str(uuid.uuid4())
+    temp_path = f"temp_{file_id}.m4a"
+    with open(temp_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
 
-    # 2. Transcribe
-    result = model.transcribe(audio_path)
-    transcript = result["text"].strip()
-    if not transcript:
-        raise HTTPException(status_code=500, detail="Transcription returned empty text")
+    # 2. Transcribe with Whisper
+    result = model.transcribe(temp_path)
+    transcript = result["text"]
 
-    # 3. Build FHIR resource
-    communication = build_communication_request(transcript)
+    # 3. Detect intent
+    intent = detect_intent(transcript)
 
-    # 4. Save outputs
-    file_id = os.path.splitext(os.path.basename(audio_path))[0]
-    save_transcript(DATA_DIR, file_id, transcript)
-    save_fhir_json(DATA_DIR, file_id, communication.dict())
+    # 4. Build appropriate FHIR resource
+    if intent == "general":
+        fhir_resource = build_communication_request(transcript).dict()
+        output_file = f"{file_id}_fhir.json"
+    else:
+        fhir_resource = build_task(transcript, intent).dict()
+        output_file = f"{file_id}_task.json"
 
-    return communication
+    # 5. Save results
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    save_transcript(data_dir, file_id, transcript)
+    save_fhir_json(data_dir, file_id, fhir_resource)
+
+    # 6. Clean up temp file
+    os.remove(temp_path)
+
+    return fhir_resource
