@@ -2,7 +2,7 @@
 
 def extract_intent(audio_file_path: str) -> str:
     """
-    Placeholder for voice intent extraction logic.
-    Eventually this will use an NLP model to extract intent from transcription.
+    Placeholder function for extracting intent from an audio file.
+    This is a stub for testing the FastAPI app and integration.
     """
     return "Placeholder: Intent extracted from " + audio_file_path
