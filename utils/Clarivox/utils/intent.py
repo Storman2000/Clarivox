@@ -1,16 +1,8 @@
 # utils/intent.py
 
-def extract_intent(transcript: str) -> str:
-    t = transcript.lower()
-    if "reschedule" in t:
-        return "reschedule"
-    elif "prescription" in t or "refill" in t:
-        return "medication"
-    elif "test result" in t or "lab result" in t:
-        return "test-results"
-    elif "appointment" in t:
-        return "appointment"
-    elif "cancel" in t:
-        return "cancel"
-    else:
-        return "other"
+def extract_intent(audio_file_path: str) -> str:
+    """
+    Placeholder for voice intent extraction logic.
+    Eventually this will use an NLP model to extract intent from transcription.
+    """
+    return "Placeholder: Intent extracted from " + audio_file_path
