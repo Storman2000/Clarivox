@@ -1,0 +1,14 @@
+{
+  "resourceType": "CommunicationRequest",
+  "status": "active",
+  "intent": "order",
+  "subject": {
+    "reference": "Patient/example"
+  },
+  "authoredOn": "2025-07-07T07:47:14.783888",
+  "payload": [
+    {
+      "contentString": "Hello, Dr. Savi. This is a sergeant. Pete Simpson. I was calling about my test results. You say that I may have cancer. Please schedule my medication. I appreciate it. I look forward to a phone call back. My email is 123 at gmail.com. My phone number is 123456789. Thank you. I look forward to a phone call back."
+    }
+  ]
+}
