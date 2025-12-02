@@ -1,0 +1,155 @@
+// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Hl7.Fhir.FhirPath;
+using Hl7.FhirPath;
+using MediatR;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Health.Fhir.Core.Features.Context;
+using Microsoft.Health.Fhir.Core.Features.Definition;
+using Microsoft.Health.Fhir.Core.Features.Persistence;
+using Microsoft.Health.Fhir.Core.Features.Search;
+using Microsoft.Health.Fhir.Core.Features.Search.Converters;
+using Microsoft.Health.Fhir.Core.Features.Search.Parameters;
+using Microsoft.Health.Fhir.Core.Features.Search.Registry;
+using Microsoft.Health.Fhir.Core.Features.Search.SearchValues;
+using Microsoft.Health.Fhir.Core.Models;
+using Microsoft.Health.Fhir.Core.UnitTests.Extensions;
+using Microsoft.Health.Test.Utilities;
+using NSubstitute;
+
+namespace Microsoft.Health.Fhir.Core.UnitTests.Features.Search
+{
+    public class SearchParameterFixtureData
+    {
+        // This type is immutable and is safe to reuse.
+        private static FhirTypedElementToSearchValueConverterManager _fhirTypedElementToSearchValueConverterManager;
+
+        private SearchParameterDefinitionManager _searchDefinitionManager;
+        private readonly IMediator _mediator = Substitute.For<IMediator>();
+
+        static SearchParameterFixtureData()
+        {
+            FhirPathCompiler.DefaultSymbolTable.AddFhirExtensions();
+        }
+
+        public static FhirPathCompiler Compiler { get; } = new FhirPathCompiler();
+
+        public async Task<SearchParameterDefinitionManager> GetSearchDefinitionManagerAsync()
+        {
+            return _searchDefinitionManager ??= await CreateSearchParameterDefinitionManagerAsync(new VersionSpecificModelInfoProvider(), _mediator);
+        }
+
+        public static async Task<FhirTypedElementToSearchValueConverterManager> GetFhirTypedElementToSearchValueConverterManagerAsync()
+        {
+            return _fhirTypedElementToSearchValueConverterManager ??= await CreateFhirTypedElementToSearchValueConverterManagerAsync();
+        }
+
+        private static async Task<FhirTypedElementToSearchValueConverterManager> CreateFhirTypedElementToSearchValueConverterManagerAsync()
+        {
+            var types = typeof(ITypedElementToSearchValueConverter)
+                .Assembly
+                .GetTypes()
+                .Where(x => typeof(ITypedElementToSearchValueConverter).IsAssignableFrom(x) && !x.IsAbstract && !x.IsInterface);
+#if STU3 || R4 || R4B
+            var searchValueConverterExclusions = new HashSet<Type>
+            {
+                typeof(CanonicalToReferenceSearchValueConverter),
+                typeof(IdentifierToStringSearchValueConverter),
+                typeof(IdToReferenceSearchValueConverter),
+            };
+
+            types = types.Where(x => !searchValueConverterExclusions.Contains(x));
+#endif
+
+            var requestContextAccessor = new FhirRequestContextAccessor();
+            var instanceConfig = Substitute.For<IFhirServerInstanceConfiguration>();
+            instanceConfig.BaseUri.Returns(new Uri("https://localhost/"));
+            var referenceSearchValueParser = new ReferenceSearchValueParser(requestContextAccessor, instanceConfig);
+            var codeSystemResolver = new CodeSystemResolver(ModelInfoProvider.Instance);
+            await codeSystemResolver.StartAsync(CancellationToken.None);
+
+            var fhirElementToSearchValueConverters = new List<ITypedElementToSearchValueConverter>();
+
+            foreach (Type type in types)
+            {
+                // Filter out the extension converter because it will be added to the converter dictionary in the converter manager's constructor
+                if (type.Name != nameof(FhirTypedElementToSearchValueConverterManager.ExtensionConverter))
+                {
+                    var x = (ITypedElementToSearchValueConverter)Mock.TypeWithArguments(type, referenceSearchValueParser, codeSystemResolver);
+                    fhirElementToSearchValueConverters.Add(x);
+                }
+            }
+
+            return new FhirTypedElementToSearchValueConverterManager(fhirElementToSearchValueConverters);
+        }
+
+        public static async Task<SearchParameterDefinitionManager> CreateSearchParameterDefinitionManagerAsync(IModelInfoProvider modelInfoProvider, IMediator mediator)
+        {
+            var searchService = Substitute.For<ISearchService>();
+            var searchParameterComparer = Substitute.For<ISearchParameterComparer<SearchParameterInfo>>();
+            var statusDataStore = Substitute.For<ISearchParameterStatusDataStore>();
+            var fhirDataStore = Substitute.For<IFhirDataStore>();
+            var definitionManager = new SearchParameterDefinitionManager(
+                modelInfoProvider,
+                mediator,
+                searchService.CreateMockScopeProvider(),
+                searchParameterComparer,
+                statusDataStore.CreateMockScopeProvider(),
+                fhirDataStore.CreateMockScopeProvider(),
+                NullLogger<SearchParameterDefinitionManager>.Instance);
+            await definitionManager.EnsureInitializedAsync(CancellationToken.None);
+
+            var statusRegistry = new FilebasedSearchParameterStatusDataStore(
+                definitionManager,
+                modelInfoProvider);
+            var statusManager = new SearchParameterStatusManager(
+                statusRegistry,
+                definitionManager,
+                new SearchParameterSupportResolver(await GetFhirTypedElementToSearchValueConverterManagerAsync()),
+                Substitute.For<IMediator>(),
+                NullLogger<SearchParameterStatusManager>.Instance);
+            await statusManager.EnsureInitializedAsync(CancellationToken.None);
+
+            return definitionManager;
+        }
+
+        public static async Task<SearchParameterStatusManager> CreateSearchParameterStatusManagerAsync(IModelInfoProvider modelInfoProvider, IMediator mediator)
+        {
+            var searchService = Substitute.For<ISearchService>();
+            var searchParameterComparer = Substitute.For<ISearchParameterComparer<SearchParameterInfo>>();
+            var statusDataStore = Substitute.For<ISearchParameterStatusDataStore>();
+            var fhirDataStore = Substitute.For<IFhirDataStore>();
+            var definitionManager = new SearchParameterDefinitionManager(
+                modelInfoProvider,
+                mediator,
+                searchService.CreateMockScopeProvider(),
+                searchParameterComparer,
+                statusDataStore.CreateMockScopeProvider(),
+                fhirDataStore.CreateMockScopeProvider(),
+                NullLogger<SearchParameterDefinitionManager>.Instance);
+            await definitionManager.EnsureInitializedAsync(CancellationToken.None);
+
+            var statusRegistry = new FilebasedSearchParameterStatusDataStore(
+                definitionManager,
+                modelInfoProvider);
+            var statusManager = new SearchParameterStatusManager(
+                statusRegistry,
+                definitionManager,
+                new SearchParameterSupportResolver(await GetFhirTypedElementToSearchValueConverterManagerAsync()),
+                Substitute.For<IMediator>(),
+                NullLogger<SearchParameterStatusManager>.Instance);
+            await statusManager.EnsureInitializedAsync(CancellationToken.None);
+
+            return statusManager;
+        }
+    }
+}

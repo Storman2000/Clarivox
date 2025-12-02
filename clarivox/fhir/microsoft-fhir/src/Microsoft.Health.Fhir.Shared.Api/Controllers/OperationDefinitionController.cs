@@ -1,0 +1,261 @@
+﻿// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System;
+using System.Net;
+using System.Threading.Tasks;
+using EnsureThat;
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using Microsoft.Health.Fhir.Api.Configs;
+using Microsoft.Health.Fhir.Api.Features.ActionResults;
+using Microsoft.Health.Fhir.Api.Features.Filters;
+using Microsoft.Health.Fhir.Core.Configs;
+using Microsoft.Health.Fhir.Core.Exceptions;
+using Microsoft.Health.Fhir.Core.Features;
+using Microsoft.Health.Fhir.Core.Features.Operations;
+using Microsoft.Health.Fhir.Core.Features.Routing;
+using Microsoft.Health.Fhir.Core.Features.Search;
+using Microsoft.Health.Fhir.Core.Messages.Operation;
+using Microsoft.Health.Fhir.Core.Registration;
+using Microsoft.Health.Fhir.Shared.Core.Extensions;
+
+namespace Microsoft.Health.Fhir.Api.Controllers
+{
+    /// <summary>
+    /// Controller that will handle all requests for OperationDefinition of
+    /// operations that are supported by our fhir-server and that do not have
+    /// an explicit definition in the HL7 website.
+    /// </summary>
+    [ServiceFilter(typeof(OperationOutcomeExceptionFilterAttribute))]
+    public class OperationDefinitionController : Controller
+    {
+        private readonly IMediator _mediator;
+        private readonly OperationsConfiguration _operationConfiguration;
+        private readonly FeatureConfiguration _featureConfiguration;
+        private readonly CoreFeatureConfiguration _coreFeatureConfiguration;
+        private readonly ImplementationGuidesConfiguration _implementationGuidesConfiguration;
+        private readonly IFhirRuntimeConfiguration _fhirRuntimeConfiguration;
+
+        public OperationDefinitionController(
+            IMediator mediator,
+            IOptions<OperationsConfiguration> operationsConfig,
+            IOptions<FeatureConfiguration> featureConfig,
+            IOptions<CoreFeatureConfiguration> coreFeatureConfig,
+            IOptions<ImplementationGuidesConfiguration> implementationGuidesConfig,
+            IFhirRuntimeConfiguration fhirRuntimeConfiguration)
+        {
+            EnsureArg.IsNotNull(mediator, nameof(mediator));
+            EnsureArg.IsNotNull(operationsConfig?.Value, nameof(operationsConfig));
+            EnsureArg.IsNotNull(featureConfig?.Value, nameof(featureConfig));
+            EnsureArg.IsNotNull(coreFeatureConfig?.Value, nameof(coreFeatureConfig));
+            EnsureArg.IsNotNull(implementationGuidesConfig?.Value, nameof(implementationGuidesConfig));
+            EnsureArg.IsNotNull(fhirRuntimeConfiguration, nameof(fhirRuntimeConfiguration));
+
+            _mediator = mediator;
+            _operationConfiguration = operationsConfig.Value;
+            _featureConfiguration = featureConfig.Value;
+            _coreFeatureConfiguration = coreFeatureConfig.Value;
+            _implementationGuidesConfiguration = implementationGuidesConfig.Value;
+            _fhirRuntimeConfiguration = fhirRuntimeConfiguration;
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.ReindexOperationDefinition, Name = RouteNames.ReindexOperationDefintion)]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReindexOperationDefintion()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.Reindex);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.ResourceReindexOperationDefinition, Name = RouteNames.ResourceReindexOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> ResourceReindexOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.ResourceReindex);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.ExportOperationDefinition, Name = RouteNames.ExportOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> ExportOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.Export);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.PatientExportOperationDefinition, Name = RouteNames.PatientExportOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> PatientExportOperationGetDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.PatientExport);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.GroupExportOperationDefinition, Name = RouteNames.GroupExportOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> GroupExportOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.GroupExport);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.AnonymizedExportOperationDefinition, Name = RouteNames.AnonymizedExportOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> AnonymizedExportOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.AnonymizedExport);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.ConvertDataOperationDefinition, Name = RouteNames.ConvertDataOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> ConvertDataOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.ConvertData);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.MemberMatchOperationDefinition, Name = RouteNames.MemberMatchOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> MemberMatchOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.MemberMatch);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.PurgeHistoryOperationDefinition, Name = RouteNames.PurgeHistoryDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> PurgeHistoryOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.PurgeHistory);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.BulkDeleteOperationDefinition, Name = RouteNames.BulkDeleteDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> BulkDeleteOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.BulkDelete);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.BulkDeleteSoftDeletedOperationDefinition, Name = RouteNames.BulkDeleteSoftDeletedDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> BulkDeleteSoftDeletedOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.BulkDeleteSoftDeleted);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.BulkUpdateOperationDefinition, Name = RouteNames.BulkUpdateDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> BulkUpdateOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.BulkUpdate);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.SearchParametersStatusQueryDefintion, Name = RouteNames.SearchParameterStatusOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> SearchParameterStatusOperationDefintion()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.SearchParameterStatus);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.IncludesOperationDefinition, Name = RouteNames.IncludesOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> IncludesOperationDefinition()
+        {
+            if (!_fhirRuntimeConfiguration.DataStore?.Equals(KnownDataStores.SqlServer, StringComparison.OrdinalIgnoreCase) ?? true)
+            {
+                throw new SearchOperationNotSupportedException(Fhir.Core.Resources.UnsupportedIncludesOperation);
+            }
+
+            return await GetOperationDefinitionAsync(OperationsConstants.Includes);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.DocRefOperationDefinition, Name = RouteNames.DocRefOperationDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> DocRefOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.DocRef);
+        }
+
+        [HttpGet]
+        [Route(KnownRoutes.ExpandOperationDefinition, Name = RouteNames.ExpandDefinition)]
+        [AllowAnonymous]
+        public async Task<IActionResult> ExpandOperationDefinition()
+        {
+            return await GetOperationDefinitionAsync(OperationsConstants.ValueSetExpand);
+        }
+
+        private async Task<IActionResult> GetOperationDefinitionAsync(string operationName)
+        {
+            CheckIfOperationIsEnabledAndRespond(operationName);
+
+            OperationDefinitionResponse response = await _mediator.GetOperationDefinitionAsync(operationName, HttpContext.RequestAborted);
+
+            return FhirResult.Create(response.OperationDefinition, HttpStatusCode.OK);
+        }
+
+        private void CheckIfOperationIsEnabledAndRespond(string operationName)
+        {
+            bool operationEnabled = false;
+            switch (operationName)
+            {
+                case OperationsConstants.Export:
+                case OperationsConstants.GroupExport:
+                case OperationsConstants.PatientExport:
+                    operationEnabled = _operationConfiguration.Export.Enabled;
+                    break;
+                case OperationsConstants.AnonymizedExport:
+                    operationEnabled = _featureConfiguration.SupportsAnonymizedExport;
+                    break;
+                case OperationsConstants.Reindex:
+                case OperationsConstants.ResourceReindex:
+                    operationEnabled = _operationConfiguration.Reindex.Enabled;
+                    break;
+                case OperationsConstants.ConvertData:
+                    operationEnabled = _operationConfiguration.ConvertData.Enabled;
+                    break;
+                case OperationsConstants.MemberMatch:
+                case OperationsConstants.PurgeHistory:
+                    operationEnabled = true;
+                    break;
+                case OperationsConstants.SearchParameterStatus:
+                    operationEnabled = _coreFeatureConfiguration.SupportsSelectableSearchParameters;
+                    break;
+                case OperationsConstants.BulkDelete:
+                    operationEnabled = _operationConfiguration.BulkDelete.Enabled;
+                    break;
+                case OperationsConstants.BulkUpdate:
+                    operationEnabled = _operationConfiguration.BulkUpdate.Enabled;
+                    break;
+                case OperationsConstants.Includes:
+                    operationEnabled = _coreFeatureConfiguration.SupportsIncludes;
+                    break;
+                case OperationsConstants.DocRef:
+                    operationEnabled = _implementationGuidesConfiguration.USCore?.EnableDocRef ?? false;
+                    break;
+                case OperationsConstants.ValueSetExpand:
+                    operationEnabled = _operationConfiguration.Terminology?.EnableExpand ?? false;
+                    break;
+                default:
+                    break;
+            }
+
+            if (!operationEnabled)
+            {
+                throw new RequestNotValidException(string.Format(Resources.OperationNotEnabled, operationName));
+            }
+        }
+    }
+}

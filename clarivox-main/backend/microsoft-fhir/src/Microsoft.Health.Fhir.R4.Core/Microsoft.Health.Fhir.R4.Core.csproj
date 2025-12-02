@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Microsoft.Health.Fhir.Core</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <DefineConstants>R4</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Microsoft.Health.Fhir.Shared.Core\Operations\Export\ExportAnonymizer.cs" Link="Features\Operations\Export\ExportAnonymizer.cs" />
+    <Compile Include="..\Microsoft.Health.Fhir.Shared.Core\Operations\Export\ExportAnonymizerFactory.cs" Link="Features\Operations\Export\ExportAnonymizerFactory.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" />
+    <PackageReference Include="Ensure.That" />
+    <PackageReference Include="FluentValidation" />
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Hl7.Fhir.R4" />
+    <PackageReference Include="Hl7.Fhir.Validation.Legacy.R4" PrivateAssets="build;analyzers" />
+    <PackageReference Include="Microsoft.Health.Fhir.Anonymizer.R4.Core" />
+    <PackageReference Include="System.Collections.Immutable" />
+    <PackageReference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Core\Microsoft.Health.Fhir.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Features\Operations\Export\" />
+  </ItemGroup>
+
+  <Import Project="..\Microsoft.Health.Fhir.Shared.Core\Microsoft.Health.Fhir.Shared.Core.projitems" Label="Shared" />
+
+</Project>

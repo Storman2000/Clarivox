@@ -1,0 +1,444 @@
+﻿// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Net;
+using System.Runtime.ExceptionServices;
+using System.Threading;
+using System.Threading.Tasks;
+using Hl7.Fhir.Model;
+using Hl7.Fhir.Serialization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
+using Microsoft.Health.Api.Features.Audit;
+using Microsoft.Health.Core.Features.Context;
+using Microsoft.Health.Fhir.Api.Features.Bundle;
+using Microsoft.Health.Fhir.Core.Configs;
+using Microsoft.Health.Fhir.Core.Features.Context;
+using Microsoft.Health.Fhir.Core.Features.Persistence;
+using Microsoft.Health.Fhir.Core.Features.Persistence.Orchestration;
+using Microsoft.Health.Fhir.Core.Models;
+using static Hl7.Fhir.Model.Bundle;
+using Task = System.Threading.Tasks.Task;
+
+namespace Microsoft.Health.Fhir.Api.Features.Resources.Bundle
+{
+    /// <summary>
+    /// Set of operations to handle a bundle in multiple parallel operations.
+    /// </summary>
+    public partial class BundleHandler
+    {
+        private readonly BundleOrchestratorOperationStatus[] _bundleOperationInProgressStatusCodes = new BundleOrchestratorOperationStatus[]
+        {
+            BundleOrchestratorOperationStatus.Open,
+            BundleOrchestratorOperationStatus.WaitingForResources,
+        };
+
+        private readonly string[] _bundleExpectedStatusCodes = new string[]
+        {
+            ((int)HttpStatusCode.OK).ToString(),
+            ((int)HttpStatusCode.Created).ToString(),
+            ((int)HttpStatusCode.NoContent).ToString(),
+            ((int)HttpStatusCode.BadRequest).ToString(), // Duplicate
+            ((int)HttpStatusCode.NotFound).ToString(),
+        };
+
+        private readonly HTTPVerb[] _readOnlyHttpVerbs = new HTTPVerb[]
+        {
+            HTTPVerb.GET,
+#if !STU3
+            HTTPVerb.HEAD,
+#endif
+        };
+
+        private async Task<EntryComponent> ExecuteRequestsInParallelAsync(
+            Hl7.Fhir.Model.Bundle responseBundle,
+            List<ResourceExecutionContext> resources,
+            IBundleOrchestratorOperation bundleOperation,
+            EntryComponent throttledEntryComponent,
+            BundleHandlerStatistics statistics,
+            CancellationToken cancellationToken)
+        {
+            if (!resources.Any())
+            {
+                return await Task.FromResult(throttledEntryComponent);
+            }
+
+            using (CancellationTokenSource requestCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                IAuditEventTypeMapping auditEventTypeMapping = _auditEventTypeMapping;
+                RequestContextAccessor<IFhirRequestContext> requestContext = _fhirRequestContextAccessor;
+                FhirJsonParser fhirJsonParser = _fhirJsonParser;
+                IBundleHttpContextAccessor bundleHttpContextAccessor = _bundleHttpContextAccessor;
+
+                // Parallel Resource Handling Function.
+                Func<ResourceExecutionContext, CancellationToken, Task> handleRequestFunction = async (ResourceExecutionContext resourceExecutionContext, CancellationToken ct) =>
+                {
+                    _logger.LogInformation("BundleHandler - Running '{HttpVerb}' Request #{RequestNumber} out of {TotalNumberOfRequests}.", resourceExecutionContext.HttpVerb, resourceExecutionContext.Index, bundleOperation.OriginalExpectedNumberOfResources);
+
+                    // Creating new instances per record in the bundle, and making their access thread-safe.
+                    // Avoiding possible internal conflicts due the parallel access from multiple threads.
+                    ResourceIdProvider resourceIdProvider = new ResourceIdProvider();
+                    IFhirRequestContext originalFhirRequestContext = (IFhirRequestContext)_originalFhirRequestContext.Clone();
+
+                    Stopwatch watch = Stopwatch.StartNew();
+
+                    try
+                    {
+                        EntryComponent entry = await HandleRequestAsync(
+                            responseBundle,
+                            resourceExecutionContext,
+                            throttledEntryComponent,
+                            _bundleType,
+                            bundleOperation,
+                            _requestCount,
+                            auditEventTypeMapping,
+                            originalFhirRequestContext,
+                            requestContext,
+                            bundleHttpContextAccessor,
+                            resourceIdProvider,
+                            fhirJsonParser,
+                            statistics,
+                            _logger,
+                            _bundleConfiguration,
+                            ct);
+
+                        DetectNeedToRefreshProfiles(resourceExecutionContext.ResourceType);
+
+                        await SetResourceProcessingStatusAsync(resourceExecutionContext.HttpVerb, resourceExecutionContext, bundleOperation, entry, cancellationToken);
+
+                        _logger.LogInformation("BundleHandler - '{HttpVerb}' Request #{RequestNumber} completed with status code '{StatusCode}' in {TotalElapsedMilliseconds}ms.", resourceExecutionContext.HttpVerb, resourceExecutionContext.Index, entry.Response.Status, watch.ElapsedMilliseconds);
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        // If the exception raised is a OperationCanceledException, then either client cancelled the request or httprequest timed out.
+                        _logger.LogWarning(ex, "Bundle request timed out. Elapsed time {TotalElapsedMilliseconds}ms. Error: {ErrorMessage}", watch.Elapsed.TotalMilliseconds, ex.Message);
+                    }
+                    catch (BaseFhirTransactionException ex)
+                    {
+                        if (ex is FhirTransactionCancelledException tce)
+                        {
+                            // Handles client cancelled operations.
+                            _logger.LogWarning(tce, $"BundleHandler - Failed transaction. Error caused due an external cancellation. Canceling Bundle Orchestrator Operation. HttpStatusCode: {tce.ResponseStatusCode}");
+                            statistics.MarkBundleAsCancelled();
+                        }
+                        else if (ex is FhirTransactionFailedException tfe && tfe.IsErrorCausedDueClientFailure())
+                        {
+                            // Handles client failures.
+                            _logger.LogWarning(tfe, $"BundleHandler - Failed transaction. Error caused due a client failure. Cancelling Bundle Orchestrator Operation. HttpStatusCode: {tfe.ResponseStatusCode}");
+                            statistics.MarkBundleAsFailedDueClientError();
+                        }
+                        else
+                        {
+                            _logger.LogError(ex, $"BundleHandler - Failed transaction. Error caused due an internal operation. Canceling Bundle Orchestrator Operation. HttpStatusCode: {ex.ResponseStatusCode}");
+                        }
+
+                        // In case of a FhirTransactionFailedException, the entire Bundle Operation should be canceled.
+                        bundleOperation.Cancel($"Failed transaction. Resource at position {resourceExecutionContext.Index}. Status Code: {ex.ResponseStatusCode}. Message: {ex.Message}");
+
+                        await requestCancellationToken.CancelAsync();
+
+                        throw;
+                    }
+                };
+
+                List<Task> requestsPerResource = new List<Task>();
+                foreach (ResourceExecutionContext resourceContext in resources)
+                {
+                    requestsPerResource.Add(handleRequestFunction(resourceContext, requestCancellationToken.Token));
+                }
+
+                try
+                {
+                    // The following Task.WhenAll should wait for all requests to finish.
+
+                    // Parallel requests are not supposed to raise exceptions, unless they are FhirTransactionFailedExceptions.
+                    // FhirTransactionFailedExceptions are a special case to invalidate an entire bundle.
+
+                    // Based on tests, as suggested by the following article, disposing Tasks does not bring any benefits.
+                    // Ref: Do I need to dispose of Tasks? https://devblogs.microsoft.com/dotnet/do-i-need-to-dispose-of-tasks/
+
+                    await Task.WhenAll(requestsPerResource);
+                }
+                catch (AggregateException age)
+                {
+                    BaseFhirTransactionException fte = age.InnerExceptions.Where(e => e is BaseFhirTransactionException).FirstOrDefault() as BaseFhirTransactionException;
+                    if (fte != null)
+                    {
+                        // If one of the exceptions raised is a FhirTransactionFailedException, then keep its origin.
+                        ExceptionDispatchInfo.Capture(fte).Throw();
+                    }
+
+                    _logger.LogError(age, "Multiple failures while processing bundle in parallel. Error: {ErrorMessage}", age.Message);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    if (ex is BaseFhirTransactionException)
+                    {
+                        // If one the exception raised is a FHIR Transaction Exception, then keep its origin.
+                        throw;
+                    }
+
+                    _logger.LogError(ex, "Failure while processing bundle in parallel. Error: {ErrorMessage}", ex.Message);
+                    throw;
+                }
+                finally
+                {
+                    CompleteOperation(bundleOperation);
+                }
+
+                return throttledEntryComponent;
+            }
+        }
+
+        private void CompleteOperation(IBundleOrchestratorOperation bundleOperation)
+        {
+            if (_bundleOrchestrator == null || bundleOperation == null)
+            {
+                return;
+            }
+
+            try
+            {
+                _bundleOrchestrator.CompleteOperation(bundleOperation);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BundleHandler - Failure while completing bundle orchestrator operation. It'll not block the bundle execution. Error: {ErrorMessage}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Sets the resource processing status in the bundle operation.
+        /// </summary>
+        /// <remarks>
+        /// Few cases where a resource must be released from a Bundle Orchestrator Operation:
+        /// * In the case a resource fails during processing, and the bundle operation is still waiting for it to be merge, that resource should be released from
+        /// the bundle operation to avoid the operation getting stuck waiting.
+        /// * Read-only operations GET and HEAD follow a different logic than PUT, POST, DELETE and PATCH, and they are not executed as single operation.
+        /// * If a resource finishes while the Bundle Operation is still "waiting for resources", it means that resource followed an unexpected path, and
+        /// it should be released.
+        /// </remarks>
+        private async Task SetResourceProcessingStatusAsync(HTTPVerb httpVerb, ResourceExecutionContext resourceExecutionContext, IBundleOrchestratorOperation bundleOperation, EntryComponent entry, CancellationToken cancellationToken)
+        {
+            string resourceFinalStatusCode = entry.Response.Status;
+
+            if (bundleOperation.Status != BundleOrchestratorOperationStatus.Completed)
+            {
+                if (_readOnlyHttpVerbs.Contains(httpVerb))
+                {
+                    _logger.LogInformation(
+                        "BundleHandler - Releasing resource #{RequestNumber} as it's a read-only operation. HTTP Verb {HTTPVerb}. HTTP Status Code {HTTPStatusCode}.",
+                        resourceExecutionContext.Index,
+                        httpVerb,
+                        resourceFinalStatusCode);
+
+                    await bundleOperation.ReleaseResourceAsync(
+                        $"Resource #{resourceExecutionContext.Index} released as it's readonly request ({httpVerb}). Request completed with HTTP Status Code {resourceFinalStatusCode}.",
+                        cancellationToken);
+                }
+                else if (!_bundleExpectedStatusCodes.Contains(resourceFinalStatusCode))
+                {
+                    _logger.LogInformation(
+                        "BundleHandler - Releasing resource #{RequestNumber} as it has completed with HTTP Status Code {HTTPStatusCode}.",
+                        resourceExecutionContext.Index,
+                        resourceFinalStatusCode);
+
+                    await bundleOperation.ReleaseResourceAsync(
+                        $"Resource #{resourceExecutionContext.Index} completed with HTTP Status Code {resourceFinalStatusCode}.",
+                        cancellationToken);
+                }
+                else if (_bundleOperationInProgressStatusCodes.Contains(bundleOperation.Status))
+                {
+                    _logger.LogInformation(
+                        "BundleHandler - Releasing resource #{RequestNumber} as it has completed while Bundle Operation is {BundleOperationStatus}. HTTP Status Code {HTTPStatusCode}.",
+                        resourceExecutionContext.Index,
+                        bundleOperation.Status,
+                        resourceFinalStatusCode);
+
+                    await bundleOperation.ReleaseResourceAsync(
+                        $"Resource #{resourceExecutionContext.Index} as it has completed while Bundle Operation is {bundleOperation.Status}. HTTP Status Code {resourceFinalStatusCode}.",
+                        cancellationToken);
+                }
+            }
+        }
+
+        private static async Task<EntryComponent> HandleRequestAsync(
+            Hl7.Fhir.Model.Bundle responseBundle,
+            ResourceExecutionContext resourceExecutionContext,
+            EntryComponent throttledEntryComponent,
+            BundleType? bundleType,
+            IBundleOrchestratorOperation bundleOperation,
+            int requestCount,
+            IAuditEventTypeMapping auditEventTypeMapping,
+            IFhirRequestContext originalFhirRequestContext,
+            RequestContextAccessor<IFhirRequestContext> requestContext,
+            IBundleHttpContextAccessor bundleHttpContextAccessor,
+            ResourceIdProvider resourceIdProvider,
+            FhirJsonParser fhirJsonParser,
+            BundleHandlerStatistics statistics,
+            ILogger<BundleHandler> logger,
+            BundleConfiguration bundleConfiguration,
+            CancellationToken cancellationToken)
+        {
+            EntryComponent entryComponent;
+
+            Stopwatch watch = Stopwatch.StartNew();
+
+            if (resourceExecutionContext.Context.Handler != null)
+            {
+                if (throttledEntryComponent != null)
+                {
+                    // A previous action was throttled.
+                    // Skip executing subsequent actions and include the 429 response.
+                    logger.LogInformation(
+                        "BundleHandler was throttled, subsequent actions will be skipped and HTTP 429 will be added as a result. HttpVerb:{HttpVerb} BundleSize: {RequestCount} EntryIndex: {EntryIndex}",
+                        resourceExecutionContext.HttpVerb,
+                        requestCount,
+                        resourceExecutionContext.Index);
+                    entryComponent = throttledEntryComponent;
+                }
+                else
+                {
+                    HttpContext httpContext = resourceExecutionContext.Context.HttpContext;
+
+                    // Ensure to pass original callers cancellation token to honor client request cancellations and httprequest timeouts
+                    httpContext.RequestAborted = cancellationToken;
+
+                    SetupContexts(
+                        bundleType,
+                        resourceExecutionContext.Context,
+                        resourceExecutionContext.HttpVerb,
+                        resourceExecutionContext.PersistedId,
+                        httpContext,
+                        BundleProcessingLogic.Parallel,
+                        bundleOperation,
+                        originalFhirRequestContext,
+                        auditEventTypeMapping,
+                        requestContext,
+                        bundleHttpContextAccessor,
+                        logger);
+
+                    // Attempt 1.
+                    await resourceExecutionContext.Context.Handler.Invoke(httpContext);
+
+                    // Should we continue retrying HTTP 429s?
+                    // As we'll start running more requests in parallel, the risk of raising more HTTP 429s is hight.
+                    // -----------
+                    // We will retry a 429 one time per request in the bundle
+                    if (httpContext.Response.StatusCode == (int)HttpStatusCode.TooManyRequests)
+                    {
+                        logger.LogInformation(
+                            "BundleHandler received HTTP 429 response, attempting retry.  HttpVerb:{HttpVerb} BundleSize:{RequestCount} EntryIndex:{EntryIndex}",
+                            resourceExecutionContext.HttpVerb,
+                            requestCount,
+                            resourceExecutionContext.Index);
+
+                        int retryDelay = 2;
+                        var retryAfterValues = httpContext.Response.Headers.GetCommaSeparatedValues("Retry-After");
+                        if (retryAfterValues != StringValues.Empty && int.TryParse(retryAfterValues[0], out var retryHeaderValue))
+                        {
+                            retryDelay = retryHeaderValue;
+                        }
+
+                        await Task.Delay(retryDelay * 1000, cancellationToken); // multiply by 1000 as retry-header specifies delay in seconds
+
+                        // Attempt 2.
+                        await resourceExecutionContext.Context.Handler.Invoke(httpContext);
+                    }
+
+                    entryComponent = CreateEntryComponent(fhirJsonParser, httpContext);
+
+                    foreach (string headerName in HeadersToAccumulate)
+                    {
+                        if (httpContext.Response.Headers.TryGetValue(headerName, out var values))
+                        {
+                            originalFhirRequestContext.ResponseHeaders[headerName] = values;
+                        }
+                    }
+
+                    if (bundleType == BundleType.Batch && entryComponent.Response.Status == "429")
+                    {
+                        logger.LogInformation(
+                            "BundleHandler received HTTP 429 response after retry, now aborting remainder of bundle. HttpVerb:{HttpVerb} BundleSize:{RequestCount} EntryIndex:{EntryIndex}",
+                            resourceExecutionContext.HttpVerb,
+                            requestCount,
+                            resourceExecutionContext.Index);
+
+                        // this action was throttled. Capture the entry and reuse it for subsequent actions.
+                        throttledEntryComponent = entryComponent;
+                    }
+                }
+            }
+            else
+            {
+                entryComponent = new EntryComponent
+                {
+                    Response = new ResponseComponent
+                    {
+                        Status = ((int)HttpStatusCode.NotFound).ToString(),
+                        Outcome = CreateOperationOutcome(
+                            OperationOutcome.IssueSeverity.Error,
+                            OperationOutcome.IssueType.NotFound,
+                            string.Format(Api.Resources.BundleNotFound, $"{resourceExecutionContext.Context.HttpContext.Request.Path}{resourceExecutionContext.Context.HttpContext.Request.QueryString}")),
+                    },
+                };
+            }
+
+            statistics.RegisterNewEntry(resourceExecutionContext.HttpVerb, resourceExecutionContext.ResourceType, resourceExecutionContext.Index, entryComponent.Response.Status, watch.Elapsed);
+
+            if (bundleType.Equals(BundleType.Transaction) && entryComponent.Response.Outcome != null)
+            {
+                if (!Enum.TryParse(entryComponent.Response.Status, out HttpStatusCode httpStatusCode))
+                {
+                    httpStatusCode = HttpStatusCode.BadRequest;
+                }
+
+                var errorMessage = string.Format(
+                    Api.Resources.TransactionFailed,
+                    resourceExecutionContext.Context.HttpContext.Request.Method,
+                    resourceExecutionContext.Context.HttpContext.Request.Path);
+
+                TransactionExceptionHandler.ThrowTransactionException(
+                    errorMessage,
+                    httpStatusCode,
+                    (OperationOutcome)entryComponent.Response.Outcome,
+                    cancelled: BundleHandlerRuntime.IsTransactionCancelledByClient(watch.Elapsed, bundleConfiguration, cancellationToken));
+            }
+
+            responseBundle.Entry[resourceExecutionContext.Index] = entryComponent;
+
+            return entryComponent;
+        }
+
+        private struct ResourceExecutionContext
+        {
+            public ResourceExecutionContext(HTTPVerb httpVerb, string resourceType, RouteContext context, int index, string persistedId)
+            {
+                HttpVerb = httpVerb;
+                ResourceType = resourceType; // Resource type can be null in case HTTP GET is used.
+                Context = context;
+                Index = index;
+                PersistedId = persistedId; // PersistedId is only generated in case of POST requests in a transaction bundle, when the entry full URL is provided.
+            }
+
+            public HTTPVerb HttpVerb { get; private set; }
+
+            public string ResourceType { get; private set; }
+
+            public RouteContext Context { get; private set; }
+
+            public int Index { get; private set; }
+
+            public string PersistedId { get; private set; }
+        }
+    }
+}

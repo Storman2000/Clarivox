@@ -1,0 +1,48 @@
+jobs:
+- job: DeleteResourceGroup
+  displayName: 'Delete resource group'
+  pool:
+    name: '$(SharedLinuxPool)'
+    vmImage: '$(LinuxVmImage)'
+  steps:
+  - task: AzurePowerShell@5
+    displayName: 'Delete resource group'
+    inputs:
+      azureSubscription: $(ConnectedServiceName)
+      azurePowerShellVersion: latestVersion
+      ScriptType: InlineScript
+      Inline: |
+        Get-AzResourceGroup -Name $(ResourceGroupName) -ErrorVariable notPresent -ErrorAction SilentlyContinue 
+        if ($notPresent) {
+          Write-Host "Resource group $(ResourceGroupName) not found"
+        } else {
+          Write-Host "Deleting resource group $(ResourceGroupName)"
+          Remove-AzResourceGroup -Name $(ResourceGroupName) -Force -Verbose
+        }
+      
+
+- template: ./cleanup-aad.yml
+
+- job: deleteImage
+  displayName: 'Delete Image'
+  pool:
+    name: '$(DefaultLinuxPool)'
+    vmImage: '$(LinuxVmImage)'
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Delete Image'
+    inputs:
+      azureSubscription: $(ConnectedServiceName)
+      scriptType: pscore
+      scriptLocation: InlineScript
+      inlineScript: |
+        $repositories = "r4_fhir-server", "r4b_fhir-server", "stu3_fhir-server", "r5_fhir-server"
+        foreach ($repositoryName in $repositories) {
+          $result = az acr manifest list-metadata --registry $(azureContainerRegistryName) --name $repositoryName --query "[?tags[0]=='$(ImageTag)']" -o tsv
+          if ($result -ne $null) {
+            Write-Host "Deleting image - $repositoryName $(ImageTag)"
+            az acr repository delete --name $(azureContainerRegistryName) --image "${repositoryName}:$(ImageTag)" --yes
+          } else {
+            Write-Host "Image not found - $repositoryName $(ImageTag)"
+          }  
+        }

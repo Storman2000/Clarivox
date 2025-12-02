@@ -1,0 +1,83 @@
+name: pr$(System.PullRequest.PullRequestNumber)-$(Date:yyyyMMdd)$(Rev:-r)
+
+parameters:
+- name: BuildConfiguration
+  default: release
+- name: nugetMultiFeedWarnLevel
+  default: none   
+
+variables:
+- name: vmImage
+  value: windows-latest
+  
+jobs:
+
+- job: Phase_1
+  displayName: PR Internal Checks for fhir-server - build and restore phase
+  cancelTimeoutInMinutes: 1
+  pool:
+    vmImage: $(vmImage)
+
+  steps:
+  - checkout: self
+    clean: true
+
+  - task: UseDotNet@2
+    displayName: Use .NET sdk
+    inputs:
+      useGlobalJson: true
+
+  - task: DotNetCoreCLI@1
+    name: ''
+    displayName: dotnet build
+    inputs:
+      projects: '**/*.sln'
+      arguments: --configuration ${{ parameters.BuildConfiguration }} --version-suffix $(build.buildnumber) /warnaserror -f net8.0      
+  - task: AutoApplicability@1
+    displayName: Run AutoApplicability
+    continueOnError: True
+    inputs:
+      ExternalRelease: true
+      IsService: true
+      
+  - task: CodeMetrics@1
+    displayName: 'Run CodeMetrics '
+    continueOnError: True
+    inputs:
+      Files: $(Build.SourcesDirectory)\**\*.dll
+
+  - task: CredScan@2
+    displayName: Run CredScan
+    continueOnError: True
+    inputs:
+      toolVersionV2: LatestPreRelease
+      debugMode: false
+      folderSuppression: false
+
+  - task: PoliCheck@1
+    displayName: Run PoliCheck
+    continueOnError: True
+
+  - task: VulnerabilityAssessment@0
+    displayName: Run Vulnerability Assessment
+    continueOnError: True
+
+  - task: SdtReport@1
+    displayName: Create Security Analysis Report
+    condition: succeededOrFailed()
+    continueOnError: True
+    inputs:
+      BinSkim: true
+      CredScan: true
+
+  - task: PublishSecurityAnalysisLogs@2
+    displayName: Publish Security Analysis Logs
+    condition: succeededOrFailed()
+    continueOnError: True
+
+  - task: PostAnalysis@1
+    displayName: Post Analysis
+    condition: succeededOrFailed()
+    inputs:
+      BinSkim: true
+      CredScan: true

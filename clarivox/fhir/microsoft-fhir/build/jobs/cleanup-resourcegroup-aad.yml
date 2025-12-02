@@ -1,0 +1,23 @@
+jobs:
+- job: DeleteResourceGroup
+  displayName: 'Delete resource group'
+  pool:
+    name: '$(SharedLinuxPool)'
+    vmImage: '$(LinuxVmImage)'
+  steps:
+  - task: AzurePowerShell@5
+    displayName: 'Delete resource group'
+    inputs:
+      azureSubscription: $(ConnectedServiceName)
+      azurePowerShellVersion: latestVersion
+      ScriptType: InlineScript
+      Inline: |
+        Get-AzResourceGroup -Name $(ResourceGroupName) -ErrorVariable notPresent -ErrorAction SilentlyContinue 
+        if ($notPresent) {
+          Write-Host "Resource group $(ResourceGroupName) not found"
+        } else {
+          Write-Host "Deleting resource group $(ResourceGroupName)"
+          Remove-AzResourceGroup -Name $(ResourceGroupName) -Force -Verbose
+        }
+
+- template: ./cleanup-aad.yml

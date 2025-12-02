@@ -1,0 +1,75 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "sqlServerName": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Name of Sql Server (existing or new). If empty, a name will be generated."
+            }
+        },
+        "sqlLocation": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "An override location for the sql server database."
+            }
+        },
+        "sqlAdministratorLogin": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "The login name of the administrator for the sql server."
+            }
+        },
+        "sqlAdministratorSid": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "The SID of the administrator for the sql server."
+            }
+        },
+        "sqlAdministratorTenantId": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "The tenant id of the administrator for the sql server."
+            }
+        },
+        "sqlServerPrincipalType": {
+            "type": "string",
+            "defaultValue": "User",
+            "allowedValues": [
+                "User",
+                "Group",
+                "Application"
+            ],
+            "metadata": {
+                "description": "The principal type of the administrator for the sql server."
+            }
+        }
+    },
+    "resources": [
+        {
+            "name": "[parameters('sqlServerName')]",
+            "type": "Microsoft.Sql/servers",
+            "apiVersion": "2020-11-01-preview",
+            "location": "[parameters('sqlLocation')]",
+            "tags": {
+                "FhirServerSolution": "FhirServerSqlServer"
+            },
+            "properties": {
+                "version": "12.0",
+                "administrators": {
+                    "administratorType": "ActiveDirectory",
+                    "azureADOnlyAuthentication": true,
+                    "principalType": "[parameters('sqlServerPrincipalType')]",
+                    "login": "[parameters('sqlAdministratorLogin')]",
+                    "sid": "[parameters('sqlAdministratorSid')]",
+                    "tenantId": "[parameters('sqlAdministratorTenantId')]"
+                }
+            }
+        }
+    ]
+}

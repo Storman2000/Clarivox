@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects>$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>8ae4a7fd-c963-4004-8086-83e4615ac357</SharedGUID>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <Import_RootNamespace>Microsoft.Health.Fhir.Tests.Integration</Import_RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)AssemblyValidationsTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\ChangeFeed\SqlServerFhirResourceChangeCaptureDisabledTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\ChangeFeed\SqlServerFhirResourceChangeCaptureFixture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\ChangeFeed\SqlServerFhirResourceChangeCaptureEnabledTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Export\CosmosDbExportTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Export\CosmosDbFhirExportTestFixture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Export\SqlServerExportTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\FhirOperationDataStoreReindexTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\FhirOperationDataStoreExportTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Export\CreateExportRequestHandlerTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\FhirOperationTestConstants.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Reindex\ReindexJobTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Operations\Reindex\ReindexSearchTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Features\Smart\SmartSearchTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SearchParameterOptimisticConcurrencyIntegrationTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlAzurePipelinesWorkloadIdentityAuthenticationProvider.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlComplexQueryTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\FhirStorageVersioningPolicyTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SearchParameterStatusDataStoreTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlRetryServiceTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerCreateStatsForSmartTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerMemberMatchTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerSetMergeTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerCreateStatsTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerColumnTypeChangeTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerWatchdogTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerSchemaUpgradeTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerSearchParameterInitializationTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\CosmosDbFhirStorageTestHelper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\CosmosDbFhirStorageTestsFixture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\FhirStorageTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\FhirStorageTestsFixture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\FhirStorageTestsFixtureArgumentSetsAttribute.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\IFhirStorageTestHelper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\ISqlServerFhirStorageTestHelper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\NullFhirCosmosQueryLogger.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlDataReaderExtensionsTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerFhirStorageTestHelper.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerFhirStorageTestsFixture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerSqlCompatibilityTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\QueueClientTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\SqlServerTransactionScopeTests.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Persistence\TestSqlHashCalculator.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,858 @@
+﻿// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Hl7.Fhir.Model;
+using Hl7.Fhir.Rest;
+using Hl7.Fhir.Utility;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Microsoft.Health.Core.Features.Context;
+using Microsoft.Health.Fhir.Core.Configs;
+using Microsoft.Health.Fhir.Core.Extensions;
+using Microsoft.Health.Fhir.Core.Features;
+using Microsoft.Health.Fhir.Core.Features.Context;
+using Microsoft.Health.Fhir.Core.Features.Definition;
+using Microsoft.Health.Fhir.Core.Features.Persistence;
+using Microsoft.Health.Fhir.Core.Features.Search;
+using Microsoft.Health.Fhir.Core.Features.Search.Access;
+using Microsoft.Health.Fhir.Core.Features.Search.Expressions;
+using Microsoft.Health.Fhir.Core.Features.Search.Expressions.Parsers;
+using Microsoft.Health.Fhir.Core.Features.Security;
+using Microsoft.Health.Fhir.Core.Models;
+using Microsoft.Health.Fhir.Core.UnitTests.Features.Context;
+using Microsoft.Health.Fhir.Tests.Common;
+using Microsoft.Health.Test.Utilities;
+using NSubstitute;
+using NSubstitute.ExceptionExtensions;
+using Xunit;
+using static Microsoft.Health.Fhir.Core.UnitTests.Features.Search.SearchExpressionTestHelper;
+using SortOrder = Microsoft.Health.Fhir.Core.Features.Search.SortOrder;
+
+namespace Microsoft.Health.Fhir.Core.UnitTests.Features.Search
+{
+    /// <summary>
+    /// Test class for SearchOptionsFactory.Create
+    /// </summary>
+    [Trait(Traits.OwningTeam, OwningTeam.Fhir)]
+    [Trait(Traits.Category, Categories.Search)]
+    public partial class SearchOptionsFactoryTests
+    {
+        private const string DefaultResourceType = "Patient";
+        private const string ContinuationTokenParamName = "ct";
+
+        private readonly IExpressionParser _expressionParser = Substitute.For<IExpressionParser>();
+        private readonly SearchOptionsFactory _factory;
+        private readonly SearchParameterInfo _resourceTypeSearchParameterInfo;
+        private readonly SearchParameterInfo _lastUpdatedSearchParameterInfo;
+        private readonly CoreFeatureConfiguration _coreFeatures;
+        private DefaultFhirRequestContext _defaultFhirRequestContext;
+        private readonly ISortingValidator _sortingValidator;
+
+        public SearchOptionsFactoryTests()
+        {
+            var searchParameterDefinitionManager = Substitute.For<ISearchParameterDefinitionManager>();
+            _resourceTypeSearchParameterInfo = new SearchParameter { Name = SearchParameterNames.ResourceType, Code = SearchParameterNames.ResourceType, Type = SearchParamType.String, Url = SearchParameterNames.ResourceTypeUri.AbsoluteUri }.ToInfo();
+            _lastUpdatedSearchParameterInfo = new SearchParameter { Name = SearchParameterNames.LastUpdated, Code = SearchParameterNames.LastUpdated, Type = SearchParamType.String }.ToInfo();
+            searchParameterDefinitionManager.GetSearchParameter(Arg.Any<string>(), Arg.Any<string>()).Throws(ci => new SearchParameterNotSupportedException(ci.ArgAt<string>(0), ci.ArgAt<string>(1)));
+            searchParameterDefinitionManager.GetSearchParameter(Arg.Any<string>(), SearchParameterNames.ResourceType).Returns(_resourceTypeSearchParameterInfo);
+            searchParameterDefinitionManager.GetSearchParameter(Arg.Any<string>(), SearchParameterNames.LastUpdated).Returns(_lastUpdatedSearchParameterInfo);
+            _coreFeatures = new CoreFeatureConfiguration();
+            _defaultFhirRequestContext = new DefaultFhirRequestContext();
+
+            _sortingValidator = Substitute.For<ISortingValidator>();
+
+            RequestContextAccessor<IFhirRequestContext> contextAccessor = _defaultFhirRequestContext.SetupAccessor();
+            _factory = new SearchOptionsFactory(
+                _expressionParser,
+                () => searchParameterDefinitionManager,
+                new OptionsWrapper<CoreFeatureConfiguration>(_coreFeatures),
+                contextAccessor,
+                _sortingValidator,
+                new ExpressionAccessControl(contextAccessor),
+                NullLogger<SearchOptionsFactory>.Instance);
+        }
+
+        public static IEnumerable<object[]> GetSearchParameterTestData
+        {
+            get
+            {
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("Patient", DataActions.Read, "patient", new SearchParams("code1", "foo")),
+                        new ScopeRestriction("Observation", DataActions.Read, "patient", new SearchParams("code2", "doo")),
+                    },
+                    new List<Tuple<string, string>>(),
+                    "(And (Param ResourceType (StringEquals TokenCode 'Patient')) (Union (All) [(And (And (Param ResourceType (StringEquals TokenCode 'Patient')) code1=foo))]))",
+                };
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("Patient", DataActions.Read, "patient", CreateSearchParams(("code1", "foo"), ("code2", "goo"))),
+                        new ScopeRestriction("Observation", DataActions.Read, "patient", CreateSearchParams(("code2", "doo"))),
+                    },
+                    new List<Tuple<string, string>>
+                    {
+                        Tuple.Create("_type", "Patient,Observation,Practitioner"),
+                        Tuple.Create("tag", "xyz"),
+                    },
+                    "(And (Param ResourceType (StringEquals TokenCode 'Patient')) (Union (All) [(And (And (Param ResourceType (StringEquals TokenCode 'Patient')) code1=foo) (And (Param ResourceType (StringEquals TokenCode 'Patient')) code2=goo))]) _type=Patient,Observation,Practitioner tag=xyz)",
+                };
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("Patient", DataActions.Read, "patient", CreateSearchParams(("code1", "foo"), ("code2", "goo"))),
+                        new ScopeRestriction("Observation", DataActions.Read, "patient", CreateSearchParams(("code2", "doo"))),
+                    },
+                    new List<Tuple<string, string>>
+                    {
+                        Tuple.Create("tag", "xyz"),
+                    },
+                    "(And (Param ResourceType (StringEquals TokenCode 'Patient')) (Union (All) [(And (And (Param ResourceType (StringEquals TokenCode 'Patient')) code1=foo) (And (Param ResourceType (StringEquals TokenCode 'Patient')) code2=goo))]) tag=xyz)",
+                };
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("all", DataActions.Read, "patient", CreateSearchParams(("_type", "Practitioner,CarePlan,Organization"))),
+                        new ScopeRestriction("Observation", DataActions.Read, "patient", CreateSearchParams(("code2", "doo"))),
+                    },
+                    null,
+                    "(And (Param ResourceType (StringEquals TokenCode 'Patient')) _type=Practitioner,CarePlan,Organization)",
+                };
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("all", DataActions.Search, "patient", null),
+                        new ScopeRestriction("Observation", DataActions.Search, "patient", CreateSearchParams(("code2", "doo"))),
+                    },
+                    null,
+                    "(Param ResourceType (StringEquals TokenCode 'Patient'))",
+                };
+                yield return new object[]
+                {
+                    "Patient",
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("all", DataActions.Search, "patient", CreateSearchParams(("_type", "Observation"))),
+                        new ScopeRestriction("Observation", DataActions.Search, "patient", CreateSearchParams(("code2", "doo"))),
+                    },
+                    null,
+                    "(And (Param ResourceType (StringEquals TokenCode 'Patient')) _type=Observation)",
+                };
+                yield return new object[]
+                {
+                    null,
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("all", DataActions.Search, "patient", null),
+                    },
+                    null,
+                    null,
+                };
+                yield return new object[]
+                {
+                    null,
+                    new List<ScopeRestriction>
+                    {
+                        new ScopeRestriction("Observation", DataActions.Search, "patient", CreateSearchParams(("code1", "doo"))),
+                        new ScopeRestriction("Encounter", DataActions.Search, "patient", CreateSearchParams(("code2", "goo"))),
+                    },
+                    null,
+                    "(Union (All) [(And (And (Param ResourceType (StringEquals TokenCode 'Observation')) code1=doo)) OR (And (And (Param ResourceType (StringEquals TokenCode 'Encounter')) code2=goo))])",
+                };
+            }
+        }
+
+        private static SearchParams CreateSearchParams(params (string key, string value)[] items)
+        {
+            var searchParams = new SearchParams();
+            foreach (var item in items)
+            {
+                searchParams.Add(item.key, item.value);
+            }
+
+            return searchParams;
+        }
+
+        [Fact]
+        public void GivenANullQueryParameters_WhenCreated_ThenDefaultSearchOptionsShouldBeCreated()
+        {
+            SearchOptions options = CreateSearchOptions(queryParameters: null);
+
+            Assert.NotNull(options);
+
+            Assert.Null(options.ContinuationToken);
+            Assert.Equal(_coreFeatures.DefaultItemCountPerSearch, options.MaxItemCount);
+            ValidateResourceTypeSearchParameterExpression(options.Expression, DefaultResourceType);
+        }
+
+        [Fact]
+        public void GivenMultipleContinuationTokens_WhenCreated_ThenExceptionShouldBeThrown()
+        {
+            const string encodedContinuationToken = "MTIz";
+
+            Assert.Throws<InvalidSearchOperationException>(() => CreateSearchOptions(
+                queryParameters: new[]
+                {
+                    Tuple.Create(ContinuationTokenParamName, encodedContinuationToken),
+                    Tuple.Create(ContinuationTokenParamName, encodedContinuationToken),
+                }));
+        }
+
+        [Fact]
+        public void GivenACount_WhenCreated_ThenCorrectMaxItemCountShouldBeSet()
+        {
+            SearchOptions options = CreateSearchOptions(
+                queryParameters: new[]
+                {
+                    Tuple.Create("_count", "5"),
+                });
+
+            Assert.NotNull(options);
+            Assert.Equal(5, options.MaxItemCount);
+        }
+
+        [Fact]
+        public void GivenACountWithValueZero_WhenCreated_ThenCorrectMaxItemCountShouldBeSet()
+        {
+            const ResourceType resourceType = ResourceType.Encounter;
+            var queryParameters = new[]
+            {
+               Tuple.Create("_count", "0"),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+            resourceType: resourceType.ToString(),
+            queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.True(options.CountOnly);
+        }
+
+        [Theory]
+        [InlineData("a")]
+        [InlineData("1.1")]
+        public void GivenACountWithInvalidValue_WhenCreated_ThenExceptionShouldBeThrown(string value)
+        {
+            const ResourceType resourceType = ResourceType.Encounter;
+            var queryParameters = new[]
+            {
+               Tuple.Create("_count", value),
+            };
+
+            Assert.Throws<System.FormatException>(() => CreateSearchOptions(
+            resourceType: resourceType.ToString(),
+            queryParameters: queryParameters));
+        }
+
+        [Fact]
+        public void GivenNoneOfTheSearchParamIsSupported_WhenCreated_ThenCorrectExpressionShouldBeGenerated()
+        {
+            const ResourceType resourceType = ResourceType.Patient;
+            const string paramName1 = "address-city";
+            const string value1 = "Seattle";
+
+            _expressionParser.Parse(Arg.Is<string[]>(x => x.Length == 1 && x[0] == resourceType.ToString()), paramName1, value1).Returns(
+                x => throw new SearchParameterNotSupportedException(typeof(Patient), paramName1));
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(paramName1, value1),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: resourceType.ToString(),
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            ValidateResourceTypeSearchParameterExpression(options.Expression, resourceType.ToString());
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("    ")]
+        public void GivenASearchParamWithEmptyValue_WhenCreated_ThenSearchParamShouldBeAddedToUnsupportedList(string value)
+        {
+            const ResourceType resourceType = ResourceType.Patient;
+            const string paramName = "address-city";
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(paramName, value),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: resourceType.ToString(),
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.Equal(queryParameters, options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenASearchParameterWithEmptyKey_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create(string.Empty, "city"),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters: queryParameters);
+            Assert.NotNull(options);
+            Assert.Equal(queryParameters.Take(1), options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenSearchParametersWithEmptyKey_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create("patient", "city"),
+                Tuple.Create(string.Empty, "anotherCity"),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters);
+            Assert.NotNull(options);
+            Assert.Single(options.UnsupportedSearchParams);
+            Assert.Equal(queryParameters.Skip(1).Take(1), options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenSearchParametersWithEmptyKeyEmptyValue_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create(" ", "city"),
+                Tuple.Create(string.Empty, string.Empty),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters);
+            Assert.NotNull(options);
+            Assert.NotNull(options.UnsupportedSearchParams);
+            Assert.Equal(2, options.UnsupportedSearchParams.Count);
+            Assert.Equal(queryParameters.Take(1), options.UnsupportedSearchParams.Take(1));
+            Assert.Equal(queryParameters.Skip(1).Take(1), options.UnsupportedSearchParams.Skip(1).Take(1));
+        }
+
+        [Fact]
+        public void GivenSearchParametersWithEmptyKeyEmptyValueWithAnotherValidParameter_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create("patient", "city"),
+                Tuple.Create(string.Empty, string.Empty),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters);
+            Assert.NotNull(options);
+            Assert.NotNull(options.UnsupportedSearchParams);
+            Assert.Single(options.UnsupportedSearchParams);
+            Assert.Equal(queryParameters.Skip(1).Take(1), options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenSearchParametersWithEmptyKeyEmptyValueWithAnotherInvalidParameter_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create(string.Empty, "city"),
+                Tuple.Create(string.Empty, string.Empty),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters);
+            Assert.NotNull(options);
+            Assert.NotNull(options.UnsupportedSearchParams);
+            Assert.Equal(2, options.UnsupportedSearchParams.Count);
+            Assert.Equal(queryParameters.Take(1), options.UnsupportedSearchParams.Take(1));
+            Assert.Equal(queryParameters.Skip(1).Take(1), options.UnsupportedSearchParams.Skip(1).Take(1));
+        }
+
+        [Fact]
+        public void GivenASearchParamWithInvalidValue_WhenCreated_ThenSearchParamShouldBeAddedToUnsupportedList()
+        {
+            const string paramName1 = "_count";
+            const string value1 = "";
+            const string paramName2 = "address-city";
+            const string value2 = "Seattle";
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(paramName1, value1),
+                Tuple.Create(paramName2, value2),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: "Patient",
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.Equal(queryParameters.Take(1), options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenSearchWithUnsupportedSortValue_WhenCreated_ThenSortingShouldBeEmptyAndOperationOutcomeIssueCreated()
+        {
+            const string paramName = SearchParameterNames.ResourceType;
+
+            const string errorMessage = "my error";
+
+            _sortingValidator.ValidateSorting(default, out Arg.Any<IReadOnlyList<string>>()).ReturnsForAnyArgs(x =>
+            {
+                x[1] = new[] { errorMessage };
+                return false;
+            });
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(KnownQueryParameterNames.Sort, paramName),
+                Tuple.Create(KnownQueryParameterNames.Sort, "-" + paramName),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: "Patient",
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.NotNull(options.Sort);
+            Assert.Empty(options.Sort);
+
+            Assert.Contains(_defaultFhirRequestContext.BundleIssues, issue => issue.Diagnostics == errorMessage);
+        }
+
+        [Theory]
+        [InlineData(SearchParameterNames.LastUpdated, SortOrder.Ascending)]
+        [InlineData("-" + SearchParameterNames.LastUpdated, SortOrder.Descending)]
+        public void GivenSearchWithSupportedSortValue_WhenCreated_ThenSearchParamShouldBeAddedToSortList(string paramName, SortOrder sortOrder)
+        {
+            _sortingValidator.ValidateSorting(default, out var errors).ReturnsForAnyArgs(true);
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(KnownQueryParameterNames.Sort, paramName),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: "Patient",
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.NotNull(options.Sort);
+            Assert.Equal((_lastUpdatedSearchParameterInfo, sortOrder), Assert.Single(options.Sort));
+        }
+
+        [Fact]
+        public void GivenSearchWithAnInvalidSortValue_WhenCreated_ThenAnOperationOutcomeIssueIsCreated()
+        {
+            const string paramName = "unknownParameter";
+
+            var queryParameters = new[]
+            {
+                Tuple.Create(KnownQueryParameterNames.Sort, paramName),
+            };
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: "Patient",
+                queryParameters: queryParameters);
+
+            Assert.NotNull(options);
+            Assert.NotNull(options.Sort);
+            Assert.Empty(options.Sort);
+
+            Assert.Contains(_defaultFhirRequestContext.BundleIssues, issue => issue.Code == OperationOutcomeConstants.IssueType.NotSupported);
+        }
+
+        [Theory]
+        [Trait(Traits.Category, Categories.CompartmentSearch)]
+        [InlineData(ResourceType.Patient, CompartmentType.Patient, "123")]
+        [InlineData(ResourceType.Appointment, CompartmentType.Device, "abc")]
+        [InlineData(ResourceType.Patient, CompartmentType.Encounter, "aaa")]
+        [InlineData(ResourceType.Condition, CompartmentType.Practitioner, "9aa")]
+        [InlineData(ResourceType.Patient, CompartmentType.RelatedPerson, "fdsfasfasfdas")]
+        [InlineData(ResourceType.Claim, CompartmentType.Encounter, "ksd;/fkds;kfsd;kf")]
+        public void GivenAValidCompartmentSearch_WhenCreated_ThenCorrectCompartmentSearchExpressionShouldBeGenerated(ResourceType resourceType, CompartmentType compartmentType, string compartmentId)
+        {
+            SearchOptions options = CreateSearchOptions(
+                resourceType: resourceType.ToString(),
+                queryParameters: null,
+                compartmentType: compartmentType.ToString(),
+                compartmentId: compartmentId);
+
+            Assert.NotNull(options);
+            ValidateMultiaryExpression(
+                options.Expression,
+                MultiaryOperator.And,
+                e => ValidateResourceTypeSearchParameterExpression(e, resourceType.ToString()),
+                e => ValidateCompartmentSearchExpression(e, compartmentType.ToString(), compartmentId));
+        }
+
+        [Theory]
+        [Trait(Traits.Category, Categories.CompartmentSearch)]
+        [InlineData(CompartmentType.Patient, "123")]
+        [InlineData(CompartmentType.Device, "abc")]
+        [InlineData(CompartmentType.Encounter, "aaa")]
+        [InlineData(CompartmentType.Practitioner, "9aa")]
+        [InlineData(CompartmentType.RelatedPerson, "fdsfasfasfdas")]
+        [InlineData(CompartmentType.Encounter, "ksd;/fkds;kfsd;kf")]
+        public void GivenAValidCompartmentSearchWithNullResourceType_WhenCreated_ThenCorrectCompartmentSearchExpressionShouldBeGenerated(CompartmentType compartmentType, string compartmentId)
+        {
+            SearchOptions options = CreateSearchOptions(
+                resourceType: null,
+                queryParameters: null,
+                compartmentType: compartmentType.ToString(),
+                compartmentId: compartmentId);
+
+            Assert.NotNull(options);
+            ValidateCompartmentSearchExpression(options.Expression, compartmentType.ToString(), compartmentId);
+        }
+
+        [Theory]
+        [InlineData("abc")]
+        [InlineData("12223a2424")]
+        [InlineData("fsdfsdf")]
+        [InlineData("patients")]
+        [InlineData("encounter")]
+        [InlineData("Devices")]
+        public void GivenInvalidCompartmentType_WhenCreated_ThenExceptionShouldBeThrown(string invalidCompartmentType)
+        {
+            InvalidSearchOperationException exception = Assert.Throws<InvalidSearchOperationException>(() => CreateSearchOptions(
+                resourceType: null,
+                queryParameters: null,
+                compartmentType: invalidCompartmentType,
+                compartmentId: "123"));
+
+            Assert.Equal(exception.Message, $"Compartment type {invalidCompartmentType} is invalid.");
+        }
+
+        [Theory]
+        [InlineData("    ")]
+        [InlineData("")]
+        [InlineData("       ")]
+        [InlineData("\t\t")]
+        public void GivenInvalidCompartmentId_WhenCreated_ThenExceptionShouldBeThrown(string invalidCompartmentId)
+        {
+            InvalidSearchOperationException exception = Assert.Throws<InvalidSearchOperationException>(() => CreateSearchOptions(
+                resourceType: ResourceType.Claim.ToString(),
+                queryParameters: null,
+                compartmentType: CompartmentType.Patient.ToString(),
+                compartmentId: invalidCompartmentId));
+
+            Assert.Equal("Compartment id is null or empty.", exception.Message);
+        }
+
+        [Theory]
+        [InlineData(TotalType.Accurate)]
+        [InlineData(TotalType.None)]
+        public void GivenNoTotalParameter_WhenCreated_ThenDefaultSearchOptionsShouldHaveCountWhenConfiguredByDefault(TotalType type)
+        {
+            _coreFeatures.IncludeTotalInBundle = type;
+
+            SearchOptions options = CreateSearchOptions(queryParameters: null);
+
+            Assert.Equal(type, options.IncludeTotal);
+        }
+
+        [Fact]
+        public void GivenTotalParameter_WhenCreated_ThenDefaultSearchOptionsShouldOverrideDefault()
+        {
+            _coreFeatures.IncludeTotalInBundle = TotalType.Accurate;
+
+            SearchOptions options = CreateSearchOptions(queryParameters: new[] { Tuple.Create<string, string>("_total", "none"), });
+
+            Assert.Equal(TotalType.None, options.IncludeTotal);
+        }
+
+        [Fact]
+        public void GivenNoTotalParameterWithInvalidDefault_WhenCreated_ThenDefaultSearchOptionsThrowException()
+        {
+            _coreFeatures.IncludeTotalInBundle = TotalType.Estimate;
+
+            Assert.Throws<SearchOperationNotSupportedException>(() => CreateSearchOptions(queryParameters: null));
+        }
+
+        [Fact]
+        public void GivenNoCountParameter_WhenCreated_ThenDefaultSearchOptionShouldUseConfigurationValue()
+        {
+            _coreFeatures.MaxItemCountPerSearch = 10;
+            _coreFeatures.DefaultItemCountPerSearch = 3;
+
+            SearchOptions options = CreateSearchOptions();
+            Assert.Equal(3, options.MaxItemCount);
+        }
+
+        [Fact]
+        public void GivenCountParameterBelowThanMaximumAllowed_WhenCreated_ThenDefaultSearchOptionShouldBeCreatedAndCountParameterShouldBeUsed()
+        {
+            _coreFeatures.MaxItemCountPerSearch = 20;
+            _coreFeatures.DefaultItemCountPerSearch = 1;
+
+            SearchOptions options = CreateSearchOptions(queryParameters: new[] { Tuple.Create<string, string>("_count", "10"), });
+            Assert.Equal(10, options.MaxItemCount);
+        }
+
+        [Fact]
+        public void GivenCountParameterAboveThanMaximumAllowed_WhenCreated_ThenSearchOptionsAddIssueToContext()
+        {
+            _coreFeatures.MaxItemCountPerSearch = 10;
+            _coreFeatures.DefaultItemCountPerSearch = 1;
+
+            CreateSearchOptions(queryParameters: new[] { Tuple.Create<string, string>("_count", "11"), });
+
+            Assert.Collection(_defaultFhirRequestContext.BundleIssues, issue => issue.Diagnostics.Contains("exceeds limit"));
+        }
+
+        [Fact]
+        public void GivenSetCoreFeatureForIncludeCount_WhenCreated_ThenSearchOptionsHaveSameValue()
+        {
+            _coreFeatures.DefaultIncludeCountPerSearch = 9;
+
+            SearchOptions options = CreateSearchOptions();
+            Assert.Equal(_coreFeatures.DefaultIncludeCountPerSearch, options.IncludeCount);
+        }
+
+        [Fact]
+        public void GivenSearchParameterText_WhenCreated_ThenSearchParameterShouldBeAddedToUnsupportedList()
+        {
+            var queryParameters = new[]
+            {
+                Tuple.Create(KnownQueryParameterNames.Text, "mobile"),
+            };
+
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), queryParameters);
+            Assert.NotNull(options);
+            Assert.Single(options.UnsupportedSearchParams);
+        }
+
+        [Theory]
+        [InlineData(ResourceVersionType.Latest)]
+        [InlineData(ResourceVersionType.History)]
+        [InlineData(ResourceVersionType.SoftDeleted)]
+        [InlineData(ResourceVersionType.Latest | ResourceVersionType.History)]
+        [InlineData(ResourceVersionType.Latest | ResourceVersionType.SoftDeleted)]
+        [InlineData(ResourceVersionType.History | ResourceVersionType.SoftDeleted)]
+        [InlineData(ResourceVersionType.Latest | ResourceVersionType.History | ResourceVersionType.SoftDeleted)]
+        public void GivenIncludeHistoryAndDeletedParameters_WhenCreated_ThenSearchParametersShouldMatchInput(ResourceVersionType resourceVersionTypes)
+        {
+            SearchOptions options = CreateSearchOptions(ResourceType.Patient.ToString(), new List<Tuple<string, string>>(), resourceVersionTypes);
+            Assert.NotNull(options);
+            Assert.Equal(resourceVersionTypes, options.ResourceVersionTypes);
+            Assert.Empty(options.UnsupportedSearchParams);
+        }
+
+        [Fact]
+        public void GivenNotReferencedParameterWithWildcards_WhenCreated_ThenProperExpressionIsAdded()
+        {
+            _expressionParser.ParseNotReferenced(Arg.Any<string>()).Returns(new NotReferencedExpression(null, null, true));
+
+            SearchOptions options = CreateSearchOptions(
+                resourceType: ResourceType.Patient.ToString(),
+                queryParameters: new[] { Tuple.Create(KnownQueryParameterNames.NotReferenced, "*:*") });
+            Assert.NotNull(options);
+            Assert.NotNull(options.Expression);
+            Assert.Contains((options.Expression as MultiaryExpression).Expressions, expression => expression is NotReferencedExpression);
+        }
+
+        [Fact]
+        public void GivenNotReferencedParameterWithInvalidValue_WhenCreated_ThenExceptionIsThrown()
+        {
+            var message = "test";
+            _expressionParser.ParseNotReferenced(Arg.Any<string>()).Throws(new InvalidSearchOperationException(message));
+
+            CreateSearchOptions(
+                resourceType: ResourceType.Patient.ToString(),
+                queryParameters: new[] { Tuple.Create(KnownQueryParameterNames.NotReferenced, "invalid") });
+
+            Assert.Collection(_defaultFhirRequestContext.BundleIssues, issue => issue.Diagnostics.Contains(message));
+        }
+
+        [Fact]
+        public void GivenMultipleIncludesContinuationTokens_WhenCreated_ThenExceptionShouldBeThrown()
+        {
+            const string encodedContinuationToken = "MTIz";
+
+            Assert.Throws<InvalidSearchOperationException>(() => CreateSearchOptions(
+                queryParameters: new[]
+                {
+                    Tuple.Create(KnownQueryParameterNames.IncludesContinuationToken, encodedContinuationToken),
+                    Tuple.Create(KnownQueryParameterNames.IncludesContinuationToken, encodedContinuationToken),
+                },
+                isIncludesOperation: true));
+        }
+
+        [Theory]
+        [InlineData(true, 0)]
+        [InlineData(false, 1)]
+        public void GivenIncludesContinuationToken_WhenCreated_ThenOperationOutcomeIssueShouldBeAddedForNonIncludesOperation(bool isIncludesOperation, int operationOutcomeIssueCount)
+        {
+            const string ct = "123";
+            var options = CreateSearchOptions(
+                queryParameters: new[]
+                {
+                    Tuple.Create(KnownQueryParameterNames.IncludesContinuationToken, ContinuationTokenEncoder.Encode(ct)),
+                },
+                isIncludesOperation: isIncludesOperation);
+
+            var expectedCt = isIncludesOperation ? ct : null;
+            Assert.Equal(expectedCt, options.IncludesContinuationToken);
+            Assert.Equal(
+                operationOutcomeIssueCount,
+                _defaultFhirRequestContext.BundleIssues.Count(x => x.Diagnostics == Core.Resources.IncludesContinuationTokenIgnored));
+        }
+
+        [Theory]
+        [InlineData(100, 100)]
+        [InlineData(null, 1000)]
+        [InlineData(int.MaxValue, 1000)]
+        public void GivenAnIncludesCount_WhenCreated_ThenCorrectIncludeCountShouldBeSet(int? valueToSet, int valueExpected)
+        {
+            var parameters = valueToSet.HasValue
+                ? new List<Tuple<string, string>> { Tuple.Create(KnownQueryParameterNames.IncludesCount, valueToSet.Value.ToString()) }
+                : null;
+            SearchOptions options = CreateSearchOptions(queryParameters: parameters);
+
+            Assert.NotNull(options);
+            Assert.Equal(valueExpected, options.IncludeCount);
+        }
+
+        [Fact]
+        public void GivenAnIncludesOperationRequest_WhenIncludesContinuationTokenIsMissing_ThenExceptionShouldBeThrown()
+        {
+            Assert.Throws<BadRequestException>(() => CreateSearchOptions(isIncludesOperation: true));
+        }
+
+        [Theory]
+        [MemberData(nameof(GetSearchParameterTestData))]
+        public void Create_AddsFineGrainedAccessControlWithSearchParametersExpressions_UsingMemberData(string resourceType, List<ScopeRestriction> scopeRestrictions, List<Tuple<string, string>> queryParameters, string expectedSubstring)
+        {
+            // Arrange
+            var stubExpressionParser = Substitute.For<IExpressionParser>();
+            stubExpressionParser.Parse(Arg.Any<string[]>(), Arg.Any<string>(), Arg.Any<string>())
+                .Returns(x => new StubExpression($"{x.ArgAt<string>(1)}={x.ArgAt<string>(2)}"));
+            stubExpressionParser.ParseInclude(Arg.Any<string[]>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<bool>(), Arg.Any<IReadOnlyCollection<string>>())
+                .Returns((IncludeExpression)null);
+
+            var stubResourceTypeSearchParameter = new StubSearchParameterInfo("ResourceType", "ResourceType");
+            var stubSearchParameterDefinitionManager = Substitute.For<ISearchParameterDefinitionManager>();
+            stubSearchParameterDefinitionManager.GetSearchParameter(Arg.Any<string>(), Arg.Any<string>())
+                .Returns(stubResourceTypeSearchParameter);
+            ISearchParameterDefinitionManager.SearchableSearchParameterDefinitionManagerResolver resolver = () => stubSearchParameterDefinitionManager;
+
+            var fhirRequestContext = new DefaultFhirRequestContext
+            {
+                AccessControlContext = new AccessControlContext
+                {
+                    ApplyFineGrainedAccessControl = true,
+                    ApplyFineGrainedAccessControlWithSearchParameters = true,
+                },
+            };
+
+            foreach (var restriction in scopeRestrictions)
+            {
+                fhirRequestContext.AccessControlContext.AllowedResourceActions.Add(restriction);
+            }
+
+            var contextAccessor = Substitute.For<RequestContextAccessor<IFhirRequestContext>>();
+            contextAccessor.RequestContext.Returns(fhirRequestContext);
+
+            var dummySortingValidator = Substitute.For<ISortingValidator>();
+            dummySortingValidator.ValidateSorting(
+                Arg.Any<IReadOnlyList<(SearchParameterInfo, Core.Features.Search.SortOrder)>>(),
+                out _).Returns(true);
+
+            var factory = new SearchOptionsFactory(
+                stubExpressionParser,
+                resolver,
+                new OptionsWrapper<CoreFeatureConfiguration>(_coreFeatures),
+                contextAccessor,
+                Substitute.For<ISortingValidator>(),
+                new ExpressionAccessControl(contextAccessor),
+                NullLogger<SearchOptionsFactory>.Instance);
+
+            // Act
+            SearchOptions options = factory.Create(resourceType, queryParameters, onlyIds: false, isIncludesOperation: false);
+
+            // Assert
+            if (string.IsNullOrEmpty(expectedSubstring))
+            {
+                Assert.Null(options.Expression);
+            }
+            else
+            {
+                Assert.NotNull(options.Expression);
+                string expressionText = options.Expression.ToString();
+                Assert.Contains(expectedSubstring, expressionText, System.StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        private SearchOptions CreateSearchOptions(
+            string resourceType = DefaultResourceType,
+            IReadOnlyList<Tuple<string, string>> queryParameters = null,
+            ResourceVersionType resourceVersionTypes = ResourceVersionType.Latest,
+            string compartmentType = null,
+            string compartmentId = null,
+            bool isIncludesOperation = false)
+        {
+            return _factory.Create(compartmentType, compartmentId, resourceType, queryParameters, resourceVersionTypes: resourceVersionTypes, isIncludesOperation: isIncludesOperation);
+        }
+
+        // A simple stub implementation for Expression used in our test.
+        private class StubExpression : Microsoft.Health.Fhir.Core.Features.Search.Expressions.Expression
+        {
+            private readonly string _description;
+
+            public StubExpression(string description)
+            {
+                _description = description;
+            }
+
+            public override string ToString() => _description;
+
+            public override void AddValueInsensitiveHashCode(ref HashCode hashCode)
+            {
+                hashCode.Add(_description);
+            }
+
+            public override bool ValueInsensitiveEquals(Microsoft.Health.Fhir.Core.Features.Search.Expressions.Expression other) =>
+                other is StubExpression se && se._description == _description;
+
+            public override TOutput AcceptVisitor<TContext, TOutput>(IExpressionVisitor<TContext, TOutput> visitor, TContext context)
+            {
+                throw new NotImplementedException();
+            }
+        }
+
+        // A stub for SearchParameterInfo.
+        private class StubSearchParameterInfo : SearchParameterInfo
+        {
+            public StubSearchParameterInfo(string name, string code)
+                : base(name, code)
+            {
+            }
+
+            public override string ToString() => Code;
+        }
+
+        // A dummy implementation of ExpressionAccessControl that does nothing.
+        private class DummyExpressionAccessControl : ExpressionAccessControl
+        {
+            public DummyExpressionAccessControl()
+                : base(null)
+            {
+            }
+        }
+    }
+}

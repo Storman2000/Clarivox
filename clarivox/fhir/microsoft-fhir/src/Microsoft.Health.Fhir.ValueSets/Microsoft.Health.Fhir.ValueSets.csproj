@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Ensure.That" />
+    <PackageReference Include="FluentValidation" />
+    <PackageReference Include="Hl7.Fhir.Base" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="System.Net.Http" />
+  </ItemGroup>
+
+</Project>

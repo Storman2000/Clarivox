@@ -1,0 +1,285 @@
+# Please note that to use this file for local testing
+# you must make an update
+# in the appsettings.json
+# FhirServer:Security:Authorization:ScopesClaim = "scope"
+# Due to the in-memory Identity Provider using "scope"
+# as the claim name for scopes, which is not the default
+
+
+@hostname = localhost:44348
+
+### Test rest client
+https://{{hostname}}/metadata
+
+### Get the globalAdminServicePrincipal to verify scopes not enforced, and to be able to POST test data
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=globalAdminServicePrincipal
+&client_secret=globalAdminServicePrincipal
+&scope=patient/Observation.read fhirUser fhir-api user/Encounter.*
+
+### Export smart patient compartment
+GET https://{{hostname}}/Group/smart-group-1/$export
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+Accept: application/fhir+json
+Prefer: respond-async
+
+### Get the smartUser bearer token, for testing scopes
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/*.*
+
+
+### Get groups
+GET https://{{hostname}}/Group
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get all resource in a patient's compartment
+GET https://{{hostname}}/Location
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### POST the test data
+# @name patient
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/SmartCompartmentResources.json
+
+
+### Get the smartUser bearer token, for testing scopes
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Observation.read fhirUser fhir-api user/Encounter.*
+
+### Get the smartUser bearer token, for testing scopes
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Patient.read
+
+### Get the smartUser bearer token, for testing scopes
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/*.read
+
+### Get the Patient
+GET https://{{hostname}}/Patient?_id=smart-patient-A
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get the Patient
+GET https://{{hostname}}/Patient?_id=smartUserClient
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get Observation
+GET https://{{hostname}}/Observation?_total=accurate
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get Encounter
+GET https://{{hostname}}/Encounter
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get Observation with _include Patient
+GET https://{{hostname}}/Observation?_id=smart-observation-A1&_include=Observation:subject
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+
+### Get a single Patient
+GET https://{{hostname}}/Patient/smart-patient-A
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get a single Patient with _revinclude Observations
+GET https://{{hostname}}/Patient/?_id=smart-patient-A&_revinclude=Observation:subject
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get a Patient using _type search
+GET https://{{hostname}}/?_type=Patient
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Chained search
+
+GET https://{{hostname}}/Observation?subject:Patient.name=SMARTGivenName1
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Reverse chained search
+GET https://{{hostname}}/Patient?_has:Observation:patient:code=4548-4
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get all resources
+GET https://{{hostname}}/
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Testing bundle post for Smart user with Read only access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Patient.read
+
+### POST the bundle data. Expect 403
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/SearchDataBatch.json
+
+
+### Testing bundle post for Smart user with Read and Write access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=user/*.*
+
+### POST the bundle data. Expect all Sucess
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/SearchDataBatch.json
+
+### Testing bundle post for Smart user with Read only access, where Bundle has a read and write
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Patient.read
+
+### POST the bundle data. Expect Success for Reads and 403 for Writes
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/BundleBatch.json
+
+### Testing bundle post for Smart user with Medicate write access only, where Bundle has a Patient read and Medication write
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/MedicationRequest.write
+
+### POST the bundle data. Expect Success for Write and 403 for Read
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/BundleBatch.json
+
+### Testing Transaction bundle for Smart user with Read and Write access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=user/*.*
+
+### POST the bundle data. Expect all Sucess
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/BundleTransaction.json
+
+
+### Testing Transaction bundle for Smart user with Read only access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Patient.read
+
+### POST the bundle data. Entire batch should fail
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/BundleTransaction.json
+
+### Testing Transaction bundle for Smart user with Write only access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smartUserClient
+&client_secret=smartUserClient
+&scope=patient/Patient.write
+
+### POST the bundle data. Entire batch should fail
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/BundleTransaction.json
+
+
+### Testing Transaction bundle for Smart user with Write only access
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=smart-patient-A
+&client_secret=smart-patient-A
+&scope=patient/Observation.*
+
+### Test a Bundle with GET request inside, should not return only patient data
+POST https://{{hostname}}
+content-type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+{
+  'type': 'batch',
+  'resourceType': 'Bundle',
+  'entry': [
+    {
+      'request': {
+        'method': 'GET',
+        'url': '/Observation'
+      }
+    }
+  ]
+}

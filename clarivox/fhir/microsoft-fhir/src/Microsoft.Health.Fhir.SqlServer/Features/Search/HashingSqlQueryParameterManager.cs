@@ -1,0 +1,304 @@
+﻿// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using EnsureThat;
+using Microsoft.Data.SqlClient;
+using Microsoft.Health.Fhir.SqlServer.Features.Schema.Model;
+using Microsoft.Health.SqlServer;
+using Microsoft.Health.SqlServer.Features.Schema.Model;
+using Microsoft.Health.SqlServer.Features.Storage;
+
+namespace Microsoft.Health.Fhir.SqlServer.Features.Search
+{
+    /// <summary>
+    /// Wraps a <see cref="SqlQueryParameterManager"/>, adding the ability to compute a hash of a subset of the parameters.
+    /// </summary>
+    public class HashingSqlQueryParameterManager
+    {
+        private readonly SqlQueryParameterManager _inner;
+        private readonly HashSet<SqlParameter> _setToHash = new();
+        private readonly HashSet<SqlParameter> _smartScopeParameters = new();
+        private readonly HashSet<short> _searchParamIds = new();
+
+        public HashingSqlQueryParameterManager(SqlQueryParameterManager inner)
+        {
+            EnsureArg.IsNotNull(inner, nameof(inner));
+            _inner = inner;
+        }
+
+        public bool HasParametersToHash => _setToHash.Count > 0;
+
+        public bool HasSmartScopeParameters => _smartScopeParameters.Count > 0;
+
+        public HashSet<short> SearchParamIds => _searchParamIds;
+
+        public IReadOnlyCollection<SqlParameter> ParametersToHash => new HashSet<SqlParameter>(_setToHash);
+
+        /// <summary>
+        /// Add a parameter to the SQL command if it is not ResourceTypeId and not SearchParamId. Do not add ResourceId to hash.
+        /// </summary>
+        /// <typeparam name="T">The CLR column type</typeparam>
+        /// <param name="column">The table column the parameter is bound to.</param>
+        /// <param name="value">The parameter value.</param>
+        /// <param name="includeInHash">
+        /// Whether this parameter should be included in the hash of the overall parameters.
+        /// If true, this parameter will prevent other identical queries with a different value for this parameter from re-using the query plan.
+        /// </param>
+        /// <returns>SQL parameter or input value depending on whether input was added to the list of parameters.</returns>
+        public object AddParameter<T>(Column<T> column, T value, bool includeInHash)
+        {
+            return AddParameter((Column)column, value, includeInHash);
+        }
+
+        /// <summary>
+        /// Add a parameter to the SQL command if it is not ResourceTypeId and not SearchParamId. Do not add ResourceId to hash.
+        /// </summary>
+        /// <param name="column">The table column the parameter is bound to.</param>
+        /// <param name="value">The parameter value</param>
+        /// <param name="includeInHash">
+        /// Whether this parameter should be included in the hash of the overall parameters.
+        /// If true, this parameter will prevent other identical queries with a different value for this parameter from re-using the query plan.
+        /// </param>
+        /// <returns>SQL parameter or input value depending on whether input was added to the list of parameters.</returns>
+        public object AddParameter(Column column, object value, bool includeInHash)
+        {
+            if (column.Metadata.Name == VLatest.TokenSearchParam.SearchParamId.Metadata.Name) // logic uses "SearchParamId" string value. We don't have cross table column sharing concept yet, so to avoid hardcoding TokenSearchParam is arbitrarily chosen.
+            {
+                _searchParamIds.Add((short)value);
+            }
+
+            if (column.Metadata.Name == VLatest.Resource.ResourceTypeId.Metadata.Name // logic uses "ResourceTypeId" string value. Resource table is chosen arbitrarily.
+                    || column.Metadata.Name == VLatest.ReferenceSearchParam.ReferenceResourceTypeId.Metadata.Name
+                    || column.Metadata.Name == VLatest.TokenSearchParam.SearchParamId.Metadata.Name) // logic uses "SearchParamId" string value. We don't have cross table column sharing concept yet, so to avoid hardcoding TokenSearchParam is arbitrarily chosen.
+            {
+                return value;
+            }
+
+            SqlParameter parameter = _inner.AddParameter(column, value);
+            if (includeInHash
+                && column.Metadata.Name != VLatest.Resource.ResourceId.Metadata.Name)
+            {
+                _setToHash.Add(parameter);
+            }
+
+            return parameter;
+        }
+
+        /// <summary>
+        /// Add a parameter to the SQL command.
+        /// </summary>
+        /// <param name="value">The parameter value</param>
+        /// <param name="includeInHash">
+        /// Whether this parameter should be included in the hash of the overall parameters.
+        /// If true, this parameter will prevent other identical queries with a different value for this parameter from re-using the query plan.
+        /// </param>
+        /// <returns>The SQL parameter.</returns>
+        public SqlParameter AddParameter(object value, bool includeInHash)
+        {
+            SqlParameter parameter = _inner.AddParameter(value);
+            if (includeInHash)
+            {
+                _setToHash.Add(parameter);
+            }
+
+            return parameter;
+        }
+
+        /// <summary>
+        /// Mark the last added parameter as also being relevant for SMART scope hashing.
+        /// This allows a parameter to be included in both regular hash (for all parameters)
+        /// and smart scope hash (for selective parameters).
+        /// </summary>
+        /// <param name="parameter">The parameter to mark as smart scope relevant.</param>
+        public void MarkAsSmartScopeParameter(SqlParameter parameter)
+        {
+            if (parameter != null && _setToHash.Contains(parameter))
+            {
+                _smartScopeParameters.Add(parameter);
+            }
+        }
+
+        /// <summary>
+        /// Appends a Base64-encoded SHA-256 hash of the parameters currently added to this instance with includeInHash = true
+        /// </summary>
+        /// <param name="stringBuilder">A string builder to append the hash to.</param>
+        public void AppendHash(IndentedStringBuilder stringBuilder)
+        {
+            AppendHash(stringBuilder, _setToHash);
+        }
+
+        /// <summary>
+        /// Appends a Base64-encoded SHA-256 hash of only the SMART scope parameters
+        /// </summary>
+        /// <param name="stringBuilder">A string builder to append the hash to.</param>
+        public void AppendSmartScopeHash(IndentedStringBuilder stringBuilder)
+        {
+            AppendHash(stringBuilder, _smartScopeParameters);
+        }
+
+        /// <summary>
+        /// Appends comma delimited list of names of hashed parameters
+        /// </summary>
+        /// <param name="stringBuilder">A string builder to append the list to.</param>
+        public void AppendHashedParameterNames(IndentedStringBuilder stringBuilder)
+        {
+            AppendHashParameterNames(stringBuilder, _setToHash);
+        }
+
+        /// <summary>
+        /// Appends comma delimited list of names of SMART scope parameters
+        /// </summary>
+        /// <param name="stringBuilder">A string builder to append the list to.</param>
+        public void AppendSmartScopeParameterNames(IndentedStringBuilder stringBuilder)
+        {
+            AppendHashParameterNames(stringBuilder, _smartScopeParameters);
+        }
+
+        private void AppendHash(IndentedStringBuilder stringBuilder, HashSet<SqlParameter> parameters)
+        {
+            IncrementalHash incrementalHash = null;
+            Span<byte> buf = stackalloc byte[256];
+            int currentBufferIndex = 0;
+
+            foreach (SqlParameter sqlParameter in parameters)
+            {
+                switch (sqlParameter.SqlDbType)
+                {
+                    case SqlDbType.BigInt:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (long)sqlParameter.Value);
+                        break;
+                    case SqlDbType.Bit:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (bool)sqlParameter.Value);
+                        break;
+                    case SqlDbType.Date:
+                    case SqlDbType.DateTime:
+                    case SqlDbType.DateTime2:
+                    case SqlDbType.SmallDateTime:
+                    case SqlDbType.Time:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (DateTime)sqlParameter.Value);
+                        break;
+                    case SqlDbType.DateTimeOffset:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (DateTimeOffset)sqlParameter.Value);
+                        break;
+                    case SqlDbType.Decimal:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (decimal)sqlParameter.Value);
+                        break;
+                    case SqlDbType.Float:
+                    case SqlDbType.Real:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (double)sqlParameter.Value);
+                        break;
+                    case SqlDbType.Int:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (int)sqlParameter.Value);
+                        break;
+                    case SqlDbType.SmallInt:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (short)sqlParameter.Value);
+                        break;
+                    case SqlDbType.TinyInt:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (byte)sqlParameter.Value);
+                        break;
+                    case SqlDbType.UniqueIdentifier:
+                        WriteAndAdvance(buf, ref currentBufferIndex, ref incrementalHash, (Guid)sqlParameter.Value);
+                        break;
+                    case SqlDbType.NChar:
+                    case SqlDbType.NText:
+                    case SqlDbType.VarChar:
+                    case SqlDbType.NVarChar:
+                    case SqlDbType.Text:
+                        WriteAndAdvanceString(buf, ref currentBufferIndex, ref incrementalHash, (string)sqlParameter.Value);
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unexpected parameter type {sqlParameter.SqlDbType}");
+                }
+            }
+
+            Span<byte> hashBytes = stackalloc byte[32];
+
+            if (incrementalHash != null)
+            {
+                if (currentBufferIndex > 0)
+                {
+                    incrementalHash.AppendData(buf[..currentBufferIndex]);
+                }
+
+                incrementalHash.GetCurrentHash(hashBytes);
+                incrementalHash.Dispose();
+            }
+            else
+            {
+                if (!SHA256.TryHashData(buf[..currentBufferIndex], hashBytes, out _))
+                {
+                    throw new InvalidOperationException("Failed to hash data");
+                }
+            }
+
+            Span<char> hashChars = stackalloc char[44]; // 44 since inputLength = 32 and inputLength => (inputLength / 3 * 4) + (((inputLength % 3) != 0) ? 4 : 0) = 44
+
+            if (!Convert.TryToBase64Chars(hashBytes, hashChars, out int hashCharsLength))
+            {
+                throw new InvalidOperationException("Failed to convert to Base64 chars.");
+            }
+
+            stringBuilder.Append(hashChars[..hashCharsLength]);
+        }
+
+        private static void AppendHashParameterNames(IndentedStringBuilder stringBuilder, HashSet<SqlParameter> parameters)
+        {
+            var first = true;
+            foreach (var param in parameters)
+            {
+                stringBuilder.Append($"{(first ? " params=" : ",")}{param}");
+                first = false;
+            }
+        }
+
+        private static void WriteAndAdvance<T>(Span<byte> buffer, ref int currentIndex, ref IncrementalHash incrementalHash, T element)
+            where T : struct
+        {
+            int elementLength = Unsafe.SizeOf<T>();
+            if (currentIndex + elementLength > buffer.Length)
+            {
+                incrementalHash ??= IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+                incrementalHash.AppendData(buffer[..currentIndex]);
+                currentIndex = 0;
+                Debug.Assert(buffer.Length >= elementLength, "Initial buffer size is not large enough for the datatypes we are trying to write to it");
+            }
+
+            MemoryMarshal.Write(buffer[currentIndex..], in element);
+            currentIndex += elementLength;
+        }
+
+        private static void WriteAndAdvanceString(Span<byte> buffer, ref int currentIndex, ref IncrementalHash incrementalHash, string element)
+        {
+            ReadOnlySpan<byte> elementSpan = MemoryMarshal.AsBytes(element.AsSpan());
+
+            if (currentIndex + elementSpan.Length > buffer.Length)
+            {
+                incrementalHash ??= IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+                incrementalHash.AppendData(buffer[..currentIndex]);
+                currentIndex = 0;
+            }
+
+            if (currentIndex + elementSpan.Length > buffer.Length)
+            {
+                // still too big to fit.
+                incrementalHash.AppendData(elementSpan);
+            }
+            else
+            {
+                elementSpan.CopyTo(buffer);
+                currentIndex += elementSpan.Length;
+            }
+        }
+    }
+}

@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Microsoft.Health.Fhir.Client</RootNamespace>
+    <DefineConstants>R4</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Ensure.That" />
+    <PackageReference Include="Hl7.Fhir.R4" />
+    <PackageReference Include="Microsoft.Health.Client" />
+  </ItemGroup>
+  <Import Project="..\Microsoft.Health.Fhir.Shared.Client\Microsoft.Health.Fhir.Shared.Client.projitems" Label="Shared" />
+</Project>

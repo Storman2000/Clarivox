@@ -1,0 +1,90 @@
+# These commands will remove all the data in your database,
+# sometimes without a way to recover it.
+#
+# Use these only in a testing environment.
+
+@hostname = localhost:44348
+
+### Get the bearer token, if authentication is enabled
+# @name bearer
+POST https://{{hostname}}/connect/token
+content-type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_id=globalAdminServicePrincipal
+&client_secret=globalAdminServicePrincipal
+&scope=fhir-api
+
+
+### Setup test data. Reusing the Export data since it is a good mix of resources.
+# @name batch
+POST https://{{hostname}}
+Content-Type: application/json
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+< ./Data/ExportDataBatch.json
+
+### Record Bulk Delete content location
+@bulkDeleteLocation = {{bulkDelete.response.headers.Content-Location}}
+
+### Bulk Delete with search parameteres. This also sets data up for the soft deleted sample below.
+# @name bulkDelete
+DELETE https://{{hostname}}/$bulk-delete?_tag=oldData
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete with hard delete
+# @name bulkDelete
+DELETE https://{{hostname}}/$bulk-delete?_tag=oldData&_hardDelete=true
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Purge History
+# @name bulkDelete
+DELETE https://{{hostname}}/$bulk-delete?_tag=oldData&_purgeHistory=true
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete Patient with hard delete
+# @name bulkDelete
+DELETE https://{{hostname}}/Patient/$bulk-delete?_tag=oldData&_hardDelete=true
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete soft deleted resources. Run the $bulk-delete sample above to setup data for this test.
+# Since this test can't use _tag it will delete all soft deleted data in the database.
+# @name bulkDelete
+DELETE https://{{hostname}}/$bulk-delete-soft-deleted
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Get Bulk Delete request
+GET {{bulkDeleteLocation}}
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Cancel Bulk Delete request
+DELETE {{bulkDeleteLocation}}
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete everything except patients
+# @name bulkDelete
+DELETE https://{{hostname}}/$bulk-delete?_tag=oldData&excludedResourceTypes=Patient
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete with revinclude
+# @name bulkDelete
+DELETE https://{{hostname}}/Patient/$bulk-delete?_tag=oldData&_revinclude=*:*
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+### Bulk Delete removing references
+# @name bulkDelete
+DELETE https://{{hostname}}/Patient/$bulk-delete?_tag=oldData&_remove-references=true&_hardDelete=true
+Prefer: respond-async
+Authorization: Bearer {{bearer.response.body.access_token}}
+
+###
+GET https://{{hostname}}/?_tag=oldData
+Authorization: Bearer {{bearer.response.body.access_token}}
