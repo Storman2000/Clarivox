@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Microsoft.Health.Fhir.Core</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <DefineConstants>R5</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Remove="Features\Definition\unsupported-search-parameters.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" />
+    <PackageReference Include="Ensure.That" />
+    <PackageReference Include="FluentValidation" />
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Hl7.Fhir.R5" />
+    <PackageReference Include="Hl7.Fhir.Validation.Legacy.R5" PrivateAssets="build;analyzers" />
+    <PackageReference Include="System.Collections.Immutable" />
+    <PackageReference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Core\Microsoft.Health.Fhir.Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\Microsoft.Health.Fhir.Shared.Core\Microsoft.Health.Fhir.Shared.Core.projitems" Label="Shared" />
+
+</Project>

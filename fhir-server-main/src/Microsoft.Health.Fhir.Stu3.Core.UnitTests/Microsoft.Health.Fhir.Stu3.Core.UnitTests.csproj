@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Microsoft.Health.Fhir.Core.UnitTests</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <DefineConstants>Stu3</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Microsoft.Health.Fhir.Shared.Core.UnitTests\Features\Operations\Export\ExportAnonymizerFactoryTests.cs" Link="Features\Export\ExportAnonymizerFactoryTests.cs" />
+    <Compile Include="..\Microsoft.Health.Fhir.Shared.Core.UnitTests\Features\Operations\Export\ExportAnonymizerTests.cs" Link="Features\Export\ExportAnonymizerTests.cs" />  
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Hl7.Fhir.Specification.Data.Stu3" IncludeAssets="contentFiles" />
+    <PackageReference Include="Hl7.Fhir.Validation.Legacy.Stu3" />
+    <PackageReference Include="Microsoft.Health.Test.Utilities" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Xunit.SkippableFact" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Health.Extensions.Xunit\Microsoft.Health.Extensions.Xunit.csproj" />
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Core.UnitTests\Microsoft.Health.Fhir.Core.UnitTests.csproj" />
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Core\Microsoft.Health.Fhir.Core.csproj" />
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Stu3.Core\Microsoft.Health.Fhir.Stu3.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Health.Fhir.Tests.Common\Microsoft.Health.Fhir.Tests.Common.csproj" />
+  </ItemGroup>
+  <Import Project="..\Microsoft.Health.Fhir.Shared.Tests\Microsoft.Health.Fhir.Shared.Tests.projitems" Label="Shared" />
+  <Import Project="..\Microsoft.Health.Fhir.Shared.Core.UnitTests\Microsoft.Health.Fhir.Shared.Core.UnitTests.projitems" Label="Shared" />
+</Project>
