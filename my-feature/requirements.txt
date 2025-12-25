@@ -11,5 +11,10 @@ torch
 spacy
 fhir.resources
 boto3
+
+# Testing dependencies
 pytest
+pytest-cov
+pytest-html
 httpx
+python-multipart
