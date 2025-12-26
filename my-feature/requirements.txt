@@ -1,0 +1,20 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+pydub
+python-magic-bin
+faster-whisper
+langdetect
+transformers
+torch
+spacy
+fhir.resources
+boto3
+
+# Testing dependencies
+pytest
+pytest-cov
+pytest-html
+httpx
+python-multipart
