@@ -1,20 +1,39 @@
+# =============================================
+# Clarivox Dependencies
+# =============================================
+
+# Core Framework
 fastapi
 uvicorn
 pydantic
 python-dotenv
+python-multipart  # Required for file uploads (UploadFile)
+
+# Audio Processing
+# NOTE: Requires FFmpeg to be installed and in PATH
+# Download: https://ffmpeg.org/download.html
 pydub
-python-magic-bin
-faster-whisper
-langdetect
+python-magic-bin  # MIME type detection on Windows
+
+# ASR / Speech-to-Text
+faster-whisper  # Optimized Whisper implementation
+
+# NLP / Intent Extraction
+langdetect  # Language detection
+spacy  # NER and NLP - Requires: python -m spacy download en_core_web_sm
 transformers
 torch
-spacy
-fhir.resources
-boto3
 
-# Testing dependencies
+# FHIR Resource Generation
+fhir.resources  # FHIR R4 compliant resource models
+
+# Cloud Metrics (optional)
+boto3  # For CloudWatch integration
+
+# =============================================
+# Testing Dependencies
+# =============================================
 pytest
 pytest-cov
 pytest-html
-httpx
-python-multipart
+httpx  # Async HTTP client for testing

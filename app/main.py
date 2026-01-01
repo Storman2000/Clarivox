@@ -8,6 +8,8 @@ import os
 import time
 import traceback
 import uuid
+import subprocess
+import logging
 from typing import Optional
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
@@ -24,6 +26,11 @@ from app.trace_logger import log_pipeline_trace, TraceLogger
 from app.error_handler import register_exception_handlers
 from app.metrics import log_end_to_end_latency, log_transcription_metrics, log_intent_metrics
 from app.background_tasks import schedule_cleanup
+from app.config import validate_config
+
+# Setup startup logger
+startup_logger = logging.getLogger("clarivox.startup")
+logging.basicConfig(level=logging.INFO)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -47,9 +54,78 @@ register_exception_handlers(app)
 # Create router
 router = APIRouter()
 
-# Initialize services
+# Initialize services (lazy loading)
 transcriber = get_transcription_service()
 intent_service = get_intent_service()
+
+
+# -----------------------------
+# Startup Event - Dependency Checks
+# -----------------------------
+@app.on_event("startup")
+async def startup_checks():
+    """
+    Verify critical dependencies and configuration at startup.
+    Checks: FFmpeg, spaCy model, configuration values.
+    """
+    startup_logger.info("=" * 50)
+    startup_logger.info("Clarivox Startup Checks")
+    startup_logger.info("=" * 50)
+    
+    # 1. Validate configuration
+    try:
+        validate_config()
+    except RuntimeError as e:
+        startup_logger.critical(f"Configuration validation failed: {e}")
+        # Don't raise - allow server to start but log critical error
+    
+    # 2. Check FFmpeg availability
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"], 
+            capture_output=True, 
+            timeout=10,
+            text=True
+        )
+        if result.returncode == 0:
+            # Extract version info from first line
+            version_line = result.stdout.split('\n')[0] if result.stdout else "unknown"
+            startup_logger.info(f"✓ FFmpeg is available: {version_line}")
+        else:
+            startup_logger.error("✗ FFmpeg check failed (non-zero exit code)")
+    except FileNotFoundError:
+        startup_logger.critical(
+            "✗ FFmpeg not found! Audio processing will fail. "
+            "Install FFmpeg and add to PATH: https://ffmpeg.org/download.html"
+        )
+    except subprocess.TimeoutExpired:
+        startup_logger.warning("✗ FFmpeg check timed out")
+    except Exception as e:
+        startup_logger.warning(f"✗ FFmpeg check error: {e}")
+    
+    # 3. Check spaCy model availability
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+        startup_logger.info("✓ spaCy model 'en_core_web_sm' loaded successfully")
+    except OSError:
+        startup_logger.warning(
+            "✗ spaCy model 'en_core_web_sm' not found. "
+            "Run: python -m spacy download en_core_web_sm"
+        )
+    except ImportError:
+        startup_logger.warning("✗ spaCy not installed")
+    except Exception as e:
+        startup_logger.warning(f"✗ spaCy check error: {e}")
+    
+    # 4. Log environment summary
+    startup_logger.info("-" * 50)
+    startup_logger.info(f"Environment: {os.getenv('ENV', 'development')}")
+    startup_logger.info(f"Whisper Model: {os.getenv('WHISPER_MODEL_SIZE', 'base')}")
+    startup_logger.info(f"Device: {os.getenv('WHISPER_DEVICE', 'cpu')}")
+    startup_logger.info("-" * 50)
+    startup_logger.info("Clarivox startup checks complete")
+    startup_logger.info("=" * 50)
 
 
 @router.post("/process-audio")
