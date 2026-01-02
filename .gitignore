@@ -2,14 +2,28 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
 
 # VS Code settings
 .vscode/
+
+# Environment files (NEVER commit secrets)
+.env
+.env.local
+.env.production
+.env.*.local
 
 # Model downloads
 whisper/
 
 # Logs and temp
+logs/
 *.log
 *.tmp
 temp_*.m4a
+
+# Test artifacts
+htmlcov/
+.pytest_cache/
+.coverage
+test_report.html
