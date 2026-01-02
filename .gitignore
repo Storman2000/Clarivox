@@ -27,3 +27,4 @@ htmlcov/
 .pytest_cache/
 .coverage
 test_report.html
+.DS_Store
