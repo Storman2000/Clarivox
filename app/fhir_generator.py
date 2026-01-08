@@ -209,43 +209,66 @@ def generate_fhir_bundle(
 ) -> Dict[str, Any]:
     """
     Generate a complete FHIR bundle with all relevant resources.
+    
+    Args:
+        intent: The extracted intent classification
+        urgency: Urgency level (emergent, urgent, semi_urgent, routine)
+        patient_mrn: Patient Medical Record Number (can be None)
+        transcript: The sanitized transcript text
+        trace_id: Unique transaction trace ID
+        medications: List of medication names (optional)
+        symptoms: List of symptom descriptions (optional)
+        
+    Returns:
+        Dict containing FHIR resources (CommunicationRequest, Task, etc.)
     """
     generator = get_fhir_generator()
-    patient_ref = generator.generate_patient_reference(patient_mrn or "unknown")
+    
+    # Null-safe patient reference generation
+    safe_mrn = patient_mrn if patient_mrn else "unknown"
+    patient_ref = generator.generate_patient_reference(safe_mrn)
+    
+    # Ensure lists are never None
+    safe_medications = medications if medications is not None else []
+    safe_symptoms = symptoms if symptoms is not None else []
+    safe_transcript = transcript if transcript else ""
+    safe_intent = intent if intent else "unknown"
+    safe_urgency = urgency if urgency else "routine"
+    safe_trace_id = trace_id if trace_id else f"CLV-{uuid.uuid4().hex[:12].upper()}"
 
     # Create main communication request
     comm_request = generator.create_communication_request(
-        transcript=transcript,
-        intent=intent,
-        urgency=urgency,
+        transcript=safe_transcript,
+        intent=safe_intent,
+        urgency=safe_urgency,
         patient_ref=patient_ref,
-        trace_id=trace_id,
-        medications=medications,
-        symptoms=symptoms
+        trace_id=safe_trace_id,
+        medications=safe_medications,
+        symptoms=safe_symptoms
     )
 
     # Create task for follow-up
     task = generator.create_task(
-        intent=intent,
-        urgency=urgency,
+        intent=safe_intent,
+        urgency=safe_urgency,
         patient_ref=patient_ref,
-        trace_id=trace_id
+        trace_id=safe_trace_id
     )
 
     # Create medication requests if applicable
     med_requests = []
-    if medications:
-        med_requests = generator.generate_medication_requests(medications, patient_ref)
+    if safe_medications:
+        med_requests = generator.generate_medication_requests(safe_medications, patient_ref)
 
     # Create symptom observations if applicable
     observations = []
-    if symptoms:
-        observations = generator.generate_symptom_observations(symptoms, patient_ref)
+    if safe_symptoms:
+        observations = generator.generate_symptom_observations(safe_symptoms, patient_ref)
 
     return {
-        "trace_id": trace_id,
-        "intent": intent,
-        "urgency": urgency,
+        "trace_id": safe_trace_id,
+        "intent": safe_intent,
+        "urgency": safe_urgency,
         "communication_request": comm_request.to_dict(),
         "task": task.to_dict(),
         "medication_requests": [m.to_dict() for m in med_requests],

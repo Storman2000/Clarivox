@@ -68,7 +68,19 @@ class TranscriptionResult:
         self.sanitized = sanitized
 
     def to_dict(self) -> Dict[str, Any]:
-        return self.__dict__
+        """Convert to dictionary with null-safe field access."""
+        return {
+            "text": self.text or "",
+            "segments": self.segments if self.segments is not None else [],
+            "language": self.language or "unknown",
+            "duration": self.duration if self.duration is not None else 0.0,
+            "audio_hash": self.audio_hash or "",
+            "trace_id": self.trace_id or "",
+            "timestamp": self.timestamp or "",
+            "model_version": self.model_version or "",
+            "confidence_score": self.confidence_score if self.confidence_score is not None else 0.0,
+            "sanitized": self.sanitized if self.sanitized is not None else False
+        }
 
 
 class TranscriptionService:

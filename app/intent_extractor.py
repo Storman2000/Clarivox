@@ -82,19 +82,29 @@ class IntentExtractionResult:
     trace_id: str
 
     def to_dict(self):
+        """Convert to dictionary with null-safe field access."""
         return {
-            "primary_intent": self.primary_intent,
-            "secondary_intents": self.secondary_intents,
-            "urgency": self.urgency,
-            "intent_confidence": self.intent_confidence,
-            "urgency_confidence": self.urgency_confidence,
-            "medications": [{"text": m.text, "confidence": m.confidence, "negated": m.negated} for m in self.medications],
-            "symptoms": [{"text": s.text, "confidence": s.confidence, "negated": s.negated} for s in self.symptoms],
-            "temporal_expressions": [{"text": t.text, "resolved_date": t.resolved_date} for t in self.temporal_expressions],
-            "crisis_indicators": self.crisis_indicators,
-            "negation_detected": self.negation_detected,
-            "transcript": self.transcript,
-            "trace_id": self.trace_id
+            "primary_intent": self.primary_intent or "unknown",
+            "secondary_intents": self.secondary_intents if self.secondary_intents is not None else [],
+            "urgency": self.urgency or "routine",
+            "intent_confidence": self.intent_confidence if self.intent_confidence is not None else 0.0,
+            "urgency_confidence": self.urgency_confidence if self.urgency_confidence is not None else 0.0,
+            "medications": [
+                {"text": m.text, "confidence": m.confidence, "negated": m.negated} 
+                for m in (self.medications or [])
+            ],
+            "symptoms": [
+                {"text": s.text, "confidence": s.confidence, "negated": s.negated} 
+                for s in (self.symptoms or [])
+            ],
+            "temporal_expressions": [
+                {"text": t.text, "resolved_date": t.resolved_date} 
+                for t in (self.temporal_expressions or [])
+            ],
+            "crisis_indicators": self.crisis_indicators if self.crisis_indicators is not None else [],
+            "negation_detected": self.negation_detected if self.negation_detected is not None else False,
+            "transcript": self.transcript or "",
+            "trace_id": self.trace_id or ""
         }
 
 
