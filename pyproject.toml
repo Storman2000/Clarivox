@@ -66,7 +66,5 @@ dev-dependencies = [
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.23.0",
 ]
-
 # SpaCy model source (not on PyPI)
-[[tool.uv.find-links]]
-url = "https://github.com/explosion/spacy-models/releases/expanded_assets/en_core_web_sm-3.8.0"
+find-links = ["https://github.com/explosion/spacy-models/releases/expanded_assets/en_core_web_sm-3.8.0"]
