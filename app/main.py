@@ -11,6 +11,7 @@ import uuid
 import subprocess
 import logging
 from typing import Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -27,47 +28,26 @@ from app.error_handler import register_exception_handlers
 from app.metrics import log_end_to_end_latency, log_transcription_metrics, log_intent_metrics
 from app.background_tasks import schedule_cleanup
 from app.config import validate_config
+from app.schemas import (
+    ProcessAudioResponse, TranscribeOnlyResponse, AudioFormatsResponse,
+    HealthResponse, TranscriberHealthResponse, ErrorResponse
+)
 
 # Setup startup logger
 startup_logger = logging.getLogger("clarivox.startup")
 logging.basicConfig(level=logging.INFO)
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Clarivox",
-    description="Healthcare Voicemail Processing API",
-    version="1.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Register exception handlers
-register_exception_handlers(app)
-
-# Create router
-router = APIRouter()
-
-# Initialize services (lazy loading)
-transcriber = get_transcription_service()
-intent_service = get_intent_service()
-
 
 # -----------------------------
-# Startup Event - Dependency Checks
+# Lifespan Event Handler - Dependency Checks
 # -----------------------------
-@app.on_event("startup")
-async def startup_checks():
+@asynccontextmanager
+async def lifespan(app_instance):
     """
-    Verify critical dependencies and configuration at startup.
-    Checks: FFmpeg, spaCy model, configuration values.
+    Lifespan context manager for startup/shutdown events.
+    Verifies critical dependencies and configuration at startup.
     """
+    # --- STARTUP ---
     startup_logger.info("=" * 50)
     startup_logger.info("Clarivox Startup Checks")
     startup_logger.info("=" * 50)
@@ -126,9 +106,53 @@ async def startup_checks():
     startup_logger.info("-" * 50)
     startup_logger.info("Clarivox startup checks complete")
     startup_logger.info("=" * 50)
+    
+    yield  # Application runs here
+    
+    # --- SHUTDOWN ---
+    startup_logger.info("Clarivox shutting down...")
 
 
-@router.post("/process-audio")
+# Initialize FastAPI app with lifespan handler
+app = FastAPI(
+    title="Clarivox",
+    description="Healthcare Voicemail Processing API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register exception handlers
+register_exception_handlers(app)
+
+# Create router
+router = APIRouter()
+
+# Initialize services (lazy loading)
+transcriber = get_transcription_service()
+intent_service = get_intent_service()
+
+
+
+@router.post(
+    "/process-audio",
+    response_model=ProcessAudioResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Audio validation failed"},
+        422: {"model": ErrorResponse, "description": "Request validation error"},
+        500: {"model": ErrorResponse, "description": "Pipeline processing error"}
+    },
+    summary="Process voicemail audio",
+    description="Full audio processing pipeline: validate, transcribe, extract intent, generate FHIR, and route."
+)
 async def process_audio(
     background_tasks: BackgroundTasks,
     audio_file: UploadFile = File(...),
@@ -240,7 +264,16 @@ async def process_audio(
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-@router.post("/transcribe-only")
+@router.post(
+    "/transcribe-only",
+    response_model=TranscribeOnlyResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Audio validation failed"},
+        500: {"model": ErrorResponse, "description": "Transcription error"}
+    },
+    summary="Transcribe audio only",
+    description="Transcription-only endpoint without intent extraction or FHIR generation."
+)
 async def transcribe_only(
     background_tasks: BackgroundTasks,
     audio_file: UploadFile = File(...),
@@ -273,7 +306,12 @@ async def transcribe_only(
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-@router.get("/audio-formats")
+@router.get(
+    "/audio-formats",
+    response_model=AudioFormatsResponse,
+    summary="Get supported audio formats",
+    description="Returns supported audio formats, size limits, and model configuration."
+)
 async def audio_formats():
     """Return supported audio formats and configuration."""
     return {
@@ -296,7 +334,12 @@ async def audio_formats():
     }
 
 
-@router.get("/health/transcriber")
+@router.get(
+    "/health/transcriber",
+    response_model=TranscriberHealthResponse,
+    summary="Transcriber health check",
+    description="Health check for the transcription service and model."
+)
 def transcriber_health():
     """Health check for transcriber service."""
     try:
@@ -315,7 +358,12 @@ def transcriber_health():
         }
 
 
-@router.get("/health")
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="General health check",
+    description="Basic health check endpoint for the Clarivox API."
+)
 def health_check():
     """General health check endpoint."""
     return {"status": "healthy", "service": "clarivox"}
